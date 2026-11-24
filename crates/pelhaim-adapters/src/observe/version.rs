@@ -1,5 +1,5 @@
 pub const CLAUDE_TESTED: &[&str] = &["2.1.331"];
-pub const CODEX_TESTED: &[&str] = &["0.158.0"];
+pub const CODEX_TESTED: &[&str] = &["0.158.0", "0.162.1"];
 
 fn parse(version: &str) -> Option<Vec<u64>> {
     let mut parts: Vec<u64> = version

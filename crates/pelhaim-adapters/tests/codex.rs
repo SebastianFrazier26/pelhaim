@@ -251,6 +251,10 @@ fn turn_aborted_fails() {
 #[test]
 fn untagged_codex_session() {
     let events = c2();
+    assert!(matches!(
+        &events[0],
+        Event::SessionDiscovered { version: Some(v), .. } if v == "0.162.1"
+    ));
     assert_eq!(tags(&events), [TagParse::Absent]);
     // The `<turn_aborted>` user record is the harness, not a second prompt.
     assert_eq!(prompt_titles(&events), ["Résumé the café notes ✓"]);
@@ -572,16 +576,18 @@ fn invalid_lines_skipped_not_fatal() {
 #[test]
 fn untested_version_flagged() {
     assert!(!is_untested("0.158.0", CODEX_TESTED));
-    assert!(is_untested("0.162.1", CODEX_TESTED));
+    assert!(!is_untested("0.162.1", CODEX_TESTED));
+    assert!(is_untested("0.162.2", CODEX_TESTED));
+    assert!(is_untested("0.163.0", CODEX_TESTED));
     let mut p = parser();
     let events = p.feed(
-        br#"{"timestamp":"2026-11-23T10:00:00Z","type":"session_meta","payload":{"id":"V","cli_version":"0.162.1"}}"#,
+        br#"{"timestamp":"2026-11-23T10:00:00Z","type":"session_meta","payload":{"id":"V","cli_version":"0.163.0"}}"#,
     );
     assert_eq!(
         events[1],
         Event::FormatUntested {
             key: SessionKey::codex("V"),
-            version: "0.162.1".into(),
+            version: "0.163.0".into(),
         }
     );
 }
