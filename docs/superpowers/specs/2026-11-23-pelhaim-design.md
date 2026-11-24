@@ -1,6 +1,6 @@
 # pelhaim: design
 
-Date: 2026-11-23. Status: draft for owner review. No product code exists yet.
+Date: 2026-11-23. Status: draft for owner review; revised the same day with four owner rulings (§5.1). No product code exists yet.
 
 ## How to read this doc
 
@@ -78,6 +78,7 @@ These are not in v1. Each could come later.
   - The font is drawn fresh: inspired by the lettering, not traced from it.
   - Colours are measured values that pelhaim then deliberately mutes. **[Owner]**
 - **Never silently acts on an observed session.** Observe mode is read-only. pelhaim never writes to `~/.claude` or `~/.codex`, never types into another process, and never answers on the session's behalf. **[Owner]**
+- **Never commits to or merges into `main`, and never pushes or opens a PR without an owner-approved alert.** **[Owner], 2026-11-23** (§7.8).
 - **Never auto-approves a tool call** in Direct or Launch mode without an explicit policy the owner set. **[Agent's call]**, from the owner's security norms.
 - **Never ships transcript content off the machine.** There is no telemetry and no crash upload. Provider calls carry only what the agent itself sends. **[Agent's call]**
 - **No LLM call standing in for the core.** Planning-graph handling, scheduling, state derivation and layout are written code. An LLM call is legitimate only as the agent being orchestrated, or as the planner's author of a draft plan. This follows the owner's "build from scratch" norm.
@@ -183,6 +184,29 @@ A working train's planned route ahead also lights green, as a cleared route.
 
 **Stack:** Rust, with a native GPU window launched from the CLI.
 
+### 5.1 Owner rulings after the builder check (2026-11-23)
+
+A builder check on the first draft raised four questions that only the owner could answer. The answers below are **[Owner], 2026-11-23**. Where they conflict with anything elsewhere in this doc, these win; the sections named have been updated to match.
+
+1. **Observed work is assigned to lines by explicit tags, not by cwd.**
+   - The owner's orchestrator runs from `~`, and its subagents record `cwd=~/Developer`, so matching on cwd fails.
+   - The orchestrator labels each agent it starts. Untagged work goes to an "Unsorted" line, whose alert offers a one-click "assign to project", remembered per session.
+   - The orchestrator session itself appears as a **DISPATCH** line. Its tagged subagent trains branch off it onto their project lines.
+   - The tag format is the agent's call: see §7.7.
+2. **Run alongside first, replace later.**
+   - In M1, pelhaim only observes the Claude Code orchestrator.
+   - From M2 on, pelhaim can itself be the orchestrator. Its planner must follow the owner's routing rules: design and security decisions go to the owner as alerts, every decision is logged, and nothing is pushed or merged without the owner. See §8.5.
+   - SQLite stays the source of truth, with a careful two-writer markdown export while both orchestrators run. A single writer becomes possible once pelhaim fully replaces the orchestrator (§7.6).
+3. **Git flow: each train gets its own worktree and branch, in Launch mode as well as Direct.**
+   - A dependent station branches off its predecessor's branch, so work stacks up.
+   - Merges to main go through PRs that the owner merges. pelhaim never merges to main and never commits to main.
+   - A merge conflict shows as a red X with an alert.
+   - Git writes (branch, worktree, commit on train branches) are their own risk class with their own approval policy. Pushing and opening PRs always need the owner's approval through an alert. See §7.8.
+4. **Definition of done.**
+   - A step is done when the agent declares it complete **and** the step's automated checks pass (tests and the step's `acceptance` criteria).
+   - Steps flagged as decision, merge, prod or security then wait as a yellow alert for the owner's sign-off, in a new "done, awaiting sign-off" state.
+   - A long-lived `claude -p` process signals the end of a step with a structured step-complete message, not by exiting. See §7.9.
+
 ## 6. Architecture
 
 All of §6 is **[Agent's call]** unless marked otherwise.
@@ -252,7 +276,7 @@ pub trait Provider: Send + Sync {
 
 pub trait Tool: Send + Sync {                              // direct mode tools
     fn spec(&self) -> ToolSpec;                            // name, JSON schema, risk class
-    fn risk(&self, input: &serde_json::Value) -> Risk;     // ReadOnly | WritesWorkspace | Executes | Network
+    fn risk(&self, input: &serde_json::Value) -> Risk;     // ReadOnly | WritesWorkspace | Executes | GitWrites | Network
     async fn call(&self, ctx: &ToolCtx, input: serde_json::Value) -> ToolOutput;
 }
 ```
@@ -302,10 +326,16 @@ active_window = "48h"                 # sessions touched within this window get 
 stall_after = "10m"                   # no writes + not at a turn end → "stalled"
 
 [[project]]
+slug = "safeascent"                   # matches `pelhaim-project: safeascent` tags (§7.7)
 name = "SafeAscent"                   # the line label
-path = "~/Developer/safeascent"       # sessions whose cwd is under this path belong here
-repo = "SebastianFrazier26/safeascent" # optional, for links
+path = "~/Developer/safeascent"       # repo root: worktrees branch from here; NOT used to assign observed sessions
+repo = "SebastianFrazier26/safeascent" # optional, for links and PRs
 order = 1
+
+[dispatch]
+# Observed sessions that are orchestrators: drawn on the DISPATCH line (§7.7).
+# Matched by session id, or by a `pelhaim-project: dispatch` tag in the session's first user message.
+sessions = []
 
 [launch]
 claude_bin = "claude"
@@ -324,11 +354,18 @@ kind = "openai_compat"
 base_url = "http://127.0.0.1:11434/v1"
 model = "<set by owner>"
 
-[direct.approval]                     # per risk class: ask | allow | deny
+[approval]                            # per risk class: ask | allow | deny. Applies to Direct tools and to
+                                      # pelhaim's own git actions in Launch and Direct (§7.8)
 read_only = "allow"
 writes_workspace = "ask"
 executes = "ask"
 network = "deny"
+git_writes = "ask"                    # branch, worktree, commit on a train branch
+# push and open-PR are not configurable: always an owner alert (§7.8). Merge to main: never.
+
+[git]
+branch_prefix = "pelhaim/"            # train branches: pelhaim/<project>/<station-id>-<train#>
+worktree_root = "~/.local/share/pelhaim/worktrees"
 
 [decision_log]
 path = "~/Developer/DECISION-LOG.md"
@@ -361,7 +398,8 @@ All of §7 is **[Agent's call]**. The concept mapping comes from §5 and is **[O
 
 ```rust
 struct Project {             // = Line (a bundle of tracks)
-    id: ProjectId, name: String, root: PathBuf, repo: Option<String>, order: i32,
+    id: ProjectId, slug: String, name: String, root: PathBuf, repo: Option<String>, order: i32,
+    kind: LineKind,          // Project | Dispatch | Unsorted   (§7.7)
     tracks: Vec<TrackId>,
 }
 
@@ -375,9 +413,11 @@ struct Track {               // = Pipeline
 struct Station {             // = Task
     id: StationId, track: TrackId, title: String, detail: String,
     depends_on: Vec<StationId>,   // may cross tracks (drawn as junction tracks)
-    status: StationStatus,        // Pending | Ready | Active | Done | Failed | Skipped
+    status: StationStatus,        // Pending | Ready | Active | Checking | AwaitingSignoff(AlertId) | Done | Failed | Skipped
     train: Option<TrainId>,       // the train berthed or assigned here
     source: StationSource,        // Plan(step_id) | Inferred(observe heuristic)
+    signoff: Vec<SignoffFlag>,    // from the plan step: Decision | Merge | Prod | Security   (§7.9)
+    branch: Option<String>,       // train branch for this station, Launch/Direct only   (§7.8)
 }
 
 struct Train {               // = Agent
@@ -385,7 +425,10 @@ struct Train {               // = Agent
     number: u16,             // display id; see 7.3
     track: TrackId,
     position: Position,      // { leg: StationId → StationId, block: u16 }  — progress along the leg
-    state: TrainState,       // Idle | Working | Waiting(AlertId) | Failed(reason) | Detached | Done | Stalled
+    state: TrainState,       // Idle | Working | Checking | Waiting(AlertId) | DoneAwaitingSignoff(AlertId)
+                             // | Failed(reason) | Detached | Done | Stalled
+    tag: TagResolution,      // Tagged(slug) | Untagged | MisTagged(raw) | Assigned(slug, by_owner)   (§7.7)
+    worktree: Option<Worktree>, // { path, branch, base_branch } — Launch/Direct only   (§7.8)
     runtime: RuntimeRef,     // ObservedClaude{path, session_id, agent_id?} | ObservedCodex{path} | LaunchedClaude{pid, session_id}
                              // | LaunchedCodex{pid, thread_id} | Direct{conv_id, provider, model}
     parent: Option<TrainId>, // spawner
@@ -403,6 +446,8 @@ struct Alert {
     id: AlertId, train: TrainId, project: ProjectId,
     kind: AlertKind,         // Question{questions, multi} | Permission{tool, input_summary} | Result{summary}
                              // | Failure{reason} | PlanReview{plan} | Stalled
+                             // | Signoff{station, flags, checks} | GitApproval{Push|OpenPr, branch}
+                             // | MergeConflict{branch, base, files} | AssignProject{session}
     created: Timestamp, state: AlertState,   // Open | Tray (dismissed) | Answered{answer, by} | Expired
     answerable: bool,        // false for observed sessions
     decision: Option<DecisionId>,
@@ -410,7 +455,9 @@ struct Alert {
 
 struct Plan {
     id: PlanId, project: ProjectId, goal: String,
-    steps: Vec<PlanStep>,    // { id, title, detail, depends_on, agent_hint: {tool|provider, model?}, acceptance }
+    steps: Vec<PlanStep>,    // { id, title, detail, depends_on, agent_hint: {tool|provider, model?},
+                             //   acceptance: Vec<Check>, signoff: Vec<SignoffFlag> }
+                             // Check = Command{argv, cwd: worktree} | Manual{text}   (§7.9)
     status: PlanStatus,      // Draft | Approved | Running | Done | Abandoned
     revision: u32,
 }
@@ -433,6 +480,9 @@ Colour is never stored (spike lesson). Each frame, block colour is derived from 
   - Cleared-route green is the same hue, drawn at reduced lightness, so the train itself stays distinct. **[Agent's call]**: the owner asked for green and did not specify the shade.
 - **Everything else** is idle cyan.
 - **A detached fork's whole child track** is magenta.
+- **New states from the 2026-11-23 rulings:**
+  - `Checking` (acceptance checks running) is working green. The tag shows a small check mark in the inset and the a11y name.
+  - `DoneAwaitingSignoff` is yellow: it is waiting on the owner. The train sits berthed at the station with its platform bar yellow, and is not grey until signed off. **[Owner]** for the state (2026-11-23); the colour follows the owner's colour table.
 
 ### 7.3 Train numbers
 
@@ -465,7 +515,7 @@ So a train's motion means activity, never invented progress.
   1. Topological layering gives each step a column, i.e. an x-slot.
   2. A greedy path cover splits the DAG into chains: take the longest remaining path, repeat. Each chain is one track in the project's line.
   3. A dependency between chains is drawn as a solid diagonal junction track, using the film's sharp-cornered ~60° diverging-track geometry.
-- **Readiness:** a step is Ready when all its dependencies are Done.
+- **Readiness:** a step is Ready when all its dependencies are Done. "Done" means fully done by §7.9: checks passed and, if flagged, signed off. A station in `AwaitingSignoff` does not release its dependants.
 - **Dispatch:** the dispatcher starts one train per Ready station, up to `max_concurrent`.
 
 ### 7.6 Decision log
@@ -486,7 +536,102 @@ So a train's motion means activity, never invented progress.
   4. Keep the previous version as `DECISION-LOG.md.pelhaim-bak`.
   5. If the hash changed between read and rename, retry once, then raise an alert instead of writing.
 - **Why so careful:** the file today is also maintained by the owner's Claude Code orchestrator, so two writers exist. See Risks R6.
+- **[Owner], 2026-11-23:** keep SQLite as the source of truth, with this careful two-writer export, for as long as pelhaim runs alongside the Claude Code orchestrator.
+  - **Later:** once pelhaim fully replaces the orchestrator, a single writer becomes possible. pelhaim would then be the only writer and could export automatically after each logged decision. Switching is an owner decision, made when it happens. Until then `write = "auto"` does not exist.
 - **Open decisions:** pelhaim reads each project's `### Open decisions (need you)` list too, and shows the count as a small yellow badge on the line label. This is read-only.
+
+### 7.7 Project tags (assigning work to lines)
+
+**[Owner], 2026-11-23:** observed work is assigned to lines by explicit tags, never by cwd. The tag format is the **[Agent's call]**.
+
+**Format**
+
+- The first line of an agent's spawn prompt is exactly:
+  ```
+  pelhaim-project: <slug>
+  ```
+  - `<slug>` is lowercase `[a-z0-9-]+`, matched against `[[project]].slug` in config.
+  - Leading whitespace and a trailing `\r` are ignored; nothing else is. The key is case-sensitive.
+  - The reserved slug `dispatch` marks an orchestrator session.
+- **Where pelhaim reads it:**
+
+  | Source | Where the tag lives |
+  |---|---|
+  | Claude Code subagent | The parent's `Agent` tool_use: `input.prompt` (the input also carries `description`, used as the train label). Linked to the subagent file by `toolUseId` in `agent-<id>.meta.json`. Fallback: the first `user` record in the subagent's own JSONL, which is that prompt. |
+  | Codex | The first line of the prompt passed to `codex exec`, read from the first user `response_item:message` in the rollout. |
+  | Any session tagging itself | The first line of the session's first real user message (not meta, not a tool result). |
+
+- **Resolution order:** an explicit owner assignment from the UI, then the subagent's spawn-prompt tag, then the session's self-tag, then Unsorted.
+  - A subagent with no tag of its own inherits nothing: it goes to Unsorted. This keeps mistakes visible. **[Agent's call]**
+- **Mis-tagged:** a well-formed tag whose slug is not in config. The train goes to Unsorted with a red-outlined tag label showing the unknown slug, and the assign alert pre-fills the closest slug by edit distance.
+
+**Lines**
+
+- **DISPATCH line:** always the top band. It holds orchestrator sessions: those listed in `[dispatch].sessions`, or self-tagged `pelhaim-project: dispatch`, plus a one-click "this is the orchestrator" action on any Unsorted session.
+  - Each tagged subagent spawned from a DISPATCH session leaves the DISPATCH track on a diverging track that crosses down onto its project's line, using the film's long diagonal junction-track geometry, and then runs on that line as its own track.
+- **Unsorted line:** the bottom band. Each untagged session or agent raises an `AssignProject` alert listing the configured projects as one-click options.
+  - The answer is stored in SQLite per session id (and per subagent id), and survives restarts. It moves the train and every later subagent of that session.
+- **The orchestrator side:** the owner's orchestrator must be told to prefix each spawn prompt with the tag. That is a one-line addition to the owner's global `CLAUDE.md` delegation rules, in the setup repo. pelhaim's own Launch and Direct modes always write the tag themselves.
+
+### 7.8 Git flow
+
+**[Owner], 2026-11-23**, for the rules. Mechanics are the **[Agent's call]**.
+
+**Rules (owner)**
+
+- Every Launch-mode and Direct-mode train works in **its own git worktree on its own branch**.
+- **Stacking:** a dependent station branches off its predecessor's branch, so work stacks up. A root station branches off `main`.
+- **Main is the owner's:** merges to main go through PRs that the owner merges. pelhaim never merges to main and never commits to main.
+- **Conflicts:** a merge conflict shows as a red X crossover on the board, plus an alert.
+- **Approval:** git writes (create branch, add worktree, commit on a train branch) are their own risk class, `git_writes`, with its own approval policy in config. **Pushing and opening PRs always need the owner's approval through an alert.** This is not configurable.
+
+**Mechanics (agent's call)**
+
+- **Branch name:** `pelhaim/<project-slug>/<station-id>-<train#>`. **Worktree path:** `<worktree_root>/<project-slug>/<branch-leaf>`.
+- **Lifecycle:**
+  1. When a station becomes Ready, pelhaim runs `git worktree add -b <branch> <path> <base>` in the project root, under the `git_writes` policy. The base is `main` for a root station, or its predecessor station's branch.
+  2. The agent works with that worktree as its cwd. Launch mode: `claude -p` runs with the worktree as its cwd; Codex gets `-C <worktree>`. Direct mode: tool confinement root = the worktree.
+  3. Commits happen on the train branch only. pelhaim refuses any command, its own or an agent tool call it mediates, whose effect is a commit to `main`, a merge into `main`, or a push without approval. In Launch mode pelhaim cannot mediate the CLI's own tool calls, so it relies on the CLI's permission settings and the owner's global rules, and it checks after each step that `main` has not moved. If it has, it raises a red alert.
+  4. When a station is fully done (§7.9), its branch is kept. The worktree may be removed (owner setting) once no dependant still needs it as a base.
+- **Multiple predecessors:** a station that depends on two branches is based on the first predecessor's branch, and pelhaim merges the second into it (a merge commit on the train branch, never on main) before the agent starts.
+  - A conflict here stops the station: the board draws a red X between the two tracks, and a `MergeConflict` alert lists the files, with actions `[Open worktree in terminal]` and `[Retry merge]`.
+- **Upstream changed:** if a predecessor branch gets new commits after a dependant has branched (for example a fix after sign-off), the dependant shows a small "base moved" mark. Rebasing is offered as an action, never done automatically.
+- **Push and PR:**
+  - When a stack's last station is done, the plan's project raises a `GitApproval{OpenPr}` alert showing branch, base, commit list and diffstat.
+  - On approval pelhaim runs `git push -u origin <branch>` and `gh pr create` with the base set to the predecessor's branch (a stacked PR) or `main`.
+  - pelhaim never runs `gh pr merge`.
+- **Observe mode** does none of this: it never touches git.
+
+### 7.9 Definition of done
+
+**[Owner], 2026-11-23:** a step is done when the agent declares it complete **and** the step's automated checks pass (tests and the step's `acceptance` criteria). Steps flagged as decision, merge, prod or security then wait for the owner's sign-off as a yellow alert, in a "done, awaiting sign-off" state.
+
+**State sequence for a station**
+
+```
+Active ──agent declares complete──► Checking ──all checks pass──► (no flags)  Done
+                                        │                  └──► (flagged)  AwaitingSignoff ──owner signs off──► Done
+                                        │                                         └──owner rejects──► Active (with the owner's note sent to the train)
+                                        └──a check fails──► Active (failure output sent to the train, attempt n+1)
+                                                             └── after max_check_attempts (default 3) ──► Failed (red)
+```
+
+- **Checks:** each `acceptance` entry is a `Check`.
+  - `Command{argv}` runs in the train's worktree under the `executes` policy, with a timeout. Exit 0 = pass. The plan's project can set a default check, e.g. `cargo test --workspace`.
+  - `Manual{text}` cannot be automated, so it turns the station into a sign-off step regardless of flags.
+  - Checks are run by pelhaim, not by the agent, so "tests pass" is never just the agent's word. **[Agent's call]**
+- **Sign-off flags:** `decision`, `merge`, `prod`, `security`, set per step by the planner or the owner while editing the plan. The `Signoff` alert shows the agent's completion summary, the check results, the diffstat, and buttons `[Sign off]`, `[Reject with note]` and `[Log decision]`.
+- **Observe mode** has no checks: an observed train's turn end is just a berth (§8.1).
+
+**How a step ends in a long-lived process** (agent's call)
+
+A process exit can't mean "step done", because a `claude -p --input-format stream-json` process stays alive between steps and a Codex process may exit mid-step to wait for an answer. Instead the agent declares completion with a structured signal:
+
+- **Direct mode:** a built-in tool `step_complete{ station_id, summary, artifacts?: [paths], notes_for_owner? }`. Calling it ends the train's loop for that station and starts Checking.
+- **Launch mode, Claude:** the preferred route is the same `step_complete` tool, exposed to the session as an MCP tool served by pelhaim over a local stdio MCP server (passed with `--mcp-config`, verified 2026-11-23 to exist). The tool call appears in the stream-json output with its input, which is the signal.
+  - Fallback, if MCP proves awkward in the M2 spike: the session's prompt instructs the agent to end the step with a final message whose last line is a single JSON object `{"pelhaim":"step_complete","station":"<id>","summary":"…"}`. pelhaim parses that line and ignores look-alikes inside code fences.
+- **Launch mode, Codex:** the same final-line JSON convention, read from the turn's last agent message. `--output-schema` (verified) can make the whole final message that object instead. The M2 spike picks one.
+- **Silence is not completion:** a turn that ends with neither signal leaves the station Active and raises a low-priority `Result` alert: "Train 1148 stopped without declaring the step complete". The owner can then nudge it or mark the step complete by hand.
 
 ## 8. Event flow per mode
 
@@ -502,9 +647,9 @@ The adapter is `observe::claude` or `observe::codex`. Its capabilities are `read
 
 **Claude Code** (`<claude_home>/projects/<cwd-slug>/<sessionId>.jsonl`)
 
-- **Project:** each record carries `cwd`. Match it against `[[project]].path` by resolved-path prefix.
-  - Don't trust the slug. loosy-goose notes the slug rule is inferred; the recorded `cwd` decides.
-  - An unmatched cwd goes to an auto line named after the git root's directory, or "Unsorted".
+- **Project:** by explicit tag, per §7.7. **[Owner], 2026-11-23.**
+  - The first draft matched the recorded `cwd` against project paths. That is dropped: the owner's orchestrator runs from `~` and its subagents record `cwd=~/Developer`, so cwd says nothing about the project.
+  - `cwd` is still read and shown in the inset, and is used only to find the session's files.
 - **History order:** follow `parentUuid` chains, not line order. Parallel tool calls branch the chain (`claude.py::_chain` and `_splice`).
   - For board purposes, a simpler rule is enough: count records by type and track open tool calls by id.
   - The full chain walk matters only if pelhaim ever reconstructs text. It shouldn't need to.
@@ -530,7 +675,9 @@ The adapter is `observe::claude` or `observe::codex`. Its capabilities are `read
 - **Stations in observe mode** (no plan exists):
   - Each owner prompt (a `user` record with a real prompt, not a tool result or meta) starts a new station on the session's track, titled with the prompt's first ~40 characters.
   - Each subagent's single station is its `description`.
+  - On the DISPATCH line (§7.7), the stations are the orchestrator's own prompts, and each `Agent` call is a branch point.
   - **[Agent's call]**. Alternative: one station per hour. Rejected because it carries no meaning.
+- **Codex project:** also by tag (§7.7), read from the first user message in the rollout.
 
 **Codex** (`<codex_home>/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl`)
 
@@ -572,10 +719,13 @@ All flags in this section were verified 2026-11-23 against `--help` unless marke
 
 - **Spawn:**
   ```
+  # cwd = the train's worktree (§7.8)
   claude -p --output-format stream-json --input-format stream-json --verbose \
          --session-id <uuid> -n "pelhaim <train#> <station>" \
+         --mcp-config <pelhaim step_complete server> \
          [--model …] [--permission-mode …] [--add-dir …]
   ```
+  - The first prompt line is always `pelhaim-project: <slug>` (§7.7). The prompt ends with the step-complete instructions (§7.9).
   - `--session-id <uuid>` (verified) lets pelhaim pick the id up front, so it knows the JSONL path before the first byte arrives.
   - `--input-format stream-json` (verified: "realtime streaming input") keeps stdin open, so pelhaim can send follow-up user messages, i.e. answers, without respawning.
   - `--verbose` is listed (verified). Whether stream-json in `-p` still requires it is unverified; check it.
@@ -597,9 +747,9 @@ All flags in this section were verified 2026-11-23 against `--help` unless marke
 
 - **Spawn:**
   ```
-  codex exec --json -C <project path> [-m <model>] [-s workspace-write] [--output-schema plan.schema.json] "<prompt>"
+  codex exec --json -C <train worktree> [-m <model>] [-s workspace-write] [--output-schema …] "pelhaim-project: <slug>\n…"
   ```
-  All of these flags were verified.
+  All of these flags were verified. `-C` points at the train's worktree, not the project root (§7.8).
 - **Local models through Codex:** `--oss` and `--local-provider lmstudio|ollama` are verified. Launch mode can therefore also drive local models through Codex, independently of Direct mode.
 - **Process life:** `codex exec` is one-shot; the process exits after the task.
   - A follow-up or answer is a new process: `codex exec resume <SESSION_ID> "<answer>"` (verified: `resume [SESSION_ID] [PROMPT]`). The train stays the same; only the process changes.
@@ -610,12 +760,16 @@ All flags in this section were verified 2026-11-23 against `--help` unless marke
 #### 8.2.3 Flow
 
 ```
-owner approves plan ─► engine: station Ready ─► Command::Launch{station, tool} ─► adapter spawns process
+owner approves plan ─► engine: station Ready ─► git: worktree + branch off base (git_writes policy, §7.8)
+   ─► Command::Launch{station, tool, worktree} ─► adapter spawns process
    stdout line ─► parse ─► Event::{TrainStep|AlertRaised|TrainBerthed|TrainFailed|SubagentSpawned}
    owner clicks an option in an alert ─► Command::Answer{alert, answer} ─► adapter writes to stdin
                                                                             (claude) / runs `exec resume` (codex)
-   process exits 0 at task end ─► station Done ─► engine readies dependants ─► next launches
+   step_complete signal (§7.9) ─► Checking ─► checks pass ─► Done, or AwaitingSignoff if flagged
+                                           └► checks fail ─► failure output sent back to the train
+   station Done ─► engine readies dependants ─► their worktrees branch off this branch ─► next launches
    process exits ≠0 / error event ─► train Failed (red), station Failed, dependants stay Pending
+   process exits 0 without step_complete ─► station stays Active + "stopped without declaring complete" alert
 ```
 
 #### 8.2.4 Take over (owner requirement)
@@ -648,7 +802,8 @@ Train loop:
    │      deny  ─► tool_result{is_error, "denied by policy"}
    ├─ tool `ask_user`   ─► AlertRaised(Question) ─► answer becomes tool_result
    ├─ tool `spawn_agent`─► Fork{Subagent} + child Train on a branch track; parent gets the child's final text as tool_result
-   └─ stop_reason end_turn ─► station Done ─► engine readies dependants
+   ├─ tool `step_complete` ─► Checking ─► Done / AwaitingSignoff / back to the loop with failures (§7.9)
+   └─ stop_reason end_turn without step_complete ─► station stays Active + "stopped without declaring complete" alert
 limits per train: max_turns, max_tokens, max_cost (if provider reports usage) ─► exceeded = Failed("limit")
 ```
 
@@ -663,7 +818,8 @@ limits per train: max_turns, max_tokens, max_cost (if provider reports usage) �
   - `read_file`, `list_dir`, `glob`, `grep`: risk ReadOnly.
   - `write_file`, `edit_file`: risk WritesWorkspace.
   - `run`: risk Executes; an argv, not a shell string, by default.
-  - `ask_user`, `spawn_agent`, `report`.
+  - `git_commit` (risk GitWrites): commits on the train's own branch only. No tool can push, merge, or touch `main` (§7.8).
+  - `ask_user`, `spawn_agent`, `step_complete`, `report`.
   - No network tool in v1.
 - **The orchestration is the core, and is written code:** the plan DAG, scheduling, the approval gate, budgets, and subagent lifecycle and result routing. The model only fills in plans and does the work inside a station.
 
@@ -673,6 +829,43 @@ Modes can run at once, e.g. observe all Claude/Codex sessions while launching ne
 
 - A launched session is also visible to the observe adapter, because it writes JSONL.
 - The engine dedups by session id: launch owns the train, and observe ignores session ids registered by launch.
+
+### 8.5 pelhaim as the orchestrator (M2 onward)
+
+**[Owner], 2026-11-23:** run alongside first, replace later.
+
+- **M1:** pelhaim only observes the owner's Claude Code orchestrator. That session sits on the DISPATCH line (§7.7). pelhaim neither plans nor dispatches.
+- **M2 onward:** pelhaim can itself be the orchestrator, in Launch or Direct mode. Both can run at once: the owner chooses per goal which orchestrator handles it.
+
+**Routing rules the pelhaim planner must follow** (owner rules; enforcement mechanics are the **[Agent's call]**)
+
+These are the owner's global norms, made concrete enough to build in M2. Each is enforced by written code in the engine, not left to the planner model's goodwill. The planner prompt also states them, so plans come out right first time.
+
+1. **Design and security decisions go to the owner as alerts.**
+   - The plan schema requires every step to say whether it involves a design choice (architecture, library, approach, data model) or a security-relevant choice (auth, secrets, permissions, sandboxing, exposure). Those steps carry the `decision` or `security` sign-off flag (§7.9).
+   - Plan validation rejects a plan where a step's text matches a design or security keyword list but the step lacks the flag. The owner can override per step. The keyword list is a backstop; the schema field is the main path.
+   - During a run, a train that hits an unplanned design or security question must call `ask_user` (Direct) or ask its question (Launch). The train prompt says so. The answer arrives as an alert, never as a silent agent default.
+   - Exception, per the owner's standing per-project rules (for example "keep working when blocked"): a train may park the question, continue independent work, and record an "agent default, not yet confirmed" decision. That still raises an alert; it just doesn't block. Which projects allow this is a per-project config flag, default off.
+2. **Every decision is logged.**
+   - Every answered `Question`, `Signoff`, `PlanReview` and `GitApproval` alert creates a `Decision` row automatically, with "Who" set to Owner.
+   - Every parked agent default creates a row with "Who" = "agent default, not yet confirmed".
+   - The markdown export stays on-click while two writers exist (§7.6). Unexported rows show as a count badge on the console strip.
+3. **Nothing is pushed or merged without the owner.**
+   - Push and PR creation only happen through a `GitApproval` alert. Merging to main never happens (§7.8).
+   - The planner cannot produce a step whose action is "push", "merge" or "deploy to prod". Such a step must be flagged `merge` or `prod`, and pelhaim itself performs only the push or PR part, after approval.
+4. **The plan comes first.** No train departs before the owner approves the plan (§5). Approval is itself logged as a decision.
+
+**Planner inputs** (M2)
+
+- The goal.
+- The project's per-repo `CLAUDE.md`.
+- The project's open decisions from `DECISION-LOG.md`, read-only.
+- The routing rules above.
+- The plan JSON schema, with `signoff` and `acceptance` required on every step.
+
+**Output:** a plan validated by §7.5 plus the rule checks above, shown as a `PlanReview` alert.
+
+**What stays with the Claude Code orchestrator until replacement:** everything the owner hasn't moved over. pelhaim doesn't need feature parity in M2. Replacement is complete when the owner says so; that is also when the decision log can move to a single writer.
 
 ## 9. UI spec
 
@@ -856,6 +1049,11 @@ Keyboard-only use must be complete.
 - **Plan review:** a larger popup with the step list as checkbox rows. Unchecking a step skips it.
   - `[Approve & depart]`, `[Edit]` (§9.6) and `[Discard]`.
   - Behind the popup, the board shows the draft plan's stations in dim cyan.
+  - Each step row shows its sign-off flags and acceptance checks, which can be edited before approval.
+- **Sign-off** (§7.9): the tab reads `Sign-off`. The body has the completion summary, a check-result checklist (`☑ cargo test --workspace`, `✕ …`), the diffstat, and `[Sign off]`, `[Reject with note]`, `[Log decision]`.
+- **Git approval** (§7.8): the tab reads `Push` or `Pull request`. The body has branch → base, commit list, diffstat, and `[Approve]` / `[Not now]`. ✕ means "not now"; it never means approve.
+- **Merge conflict** (§7.8): a red `Conflict` tab, the file list, `[Open worktree in terminal]` and `[Retry merge]`. On the board, a red X joins the two tracks.
+- **Assign project** (§7.7): for Unsorted trains. Options are the configured projects plus "this is the orchestrator". The choice is remembered per session.
 
 ### 9.5 Console strip and chat styling
 
@@ -920,14 +1118,20 @@ All of §10 is **[Agent's call]**, from the owner's norms. The owner should look
     - read-only: allow;
     - writes: ask;
     - execute: ask;
+    - git writes: ask;
     - network: deny.
     "Always allow for this train" is session-scoped and never persisted silently.
-  - *Isolation:* by default each Direct train runs in its **own git worktree** on its own branch, so every change is reviewable and can be discarded.
+  - *Isolation:* each train runs in its **own git worktree** on its own branch, so every change is reviewable and can be discarded. **[Owner], 2026-11-23**: this applies to Launch mode too (§7.8).
   - *Process limits:* timeout, output cap, scrubbed environment. The child does not inherit `ANTHROPIC_API_KEY` or other secrets; there is an explicit allowlist.
   - *OS sandbox:* not in v1. macOS `sandbox-exec` is deprecated, and Linux options (Landlock, bubblewrap) need care. Called out as Risk R4.
 - **Launch mode:**
   - pelhaim passes the owner's permission policy through to the CLIs.
   - It never adds `--dangerously-skip-permissions` or `--dangerously-bypass-approvals-and-sandbox` on its own. Those flags are exposed only if the owner sets them per project in config, with a red badge on the line label.
+- **Git** (**[Owner], 2026-11-23**; §7.8):
+  - pelhaim never commits to or merges into `main`.
+  - Push and PR creation only happen after an owner-approved alert.
+  - Branch, worktree and commit actions go through the `git_writes` policy.
+  - After every Launch step, pelhaim checks that `main` has not moved, because it cannot mediate the CLI's own git commands.
 - **Untrusted content:**
   - Transcript text, tool output and model output are data. They are rendered as text and never interpreted as commands by pelhaim.
   - Links in transcripts open only on an explicit click.
@@ -945,8 +1149,10 @@ All of §10 is **[Agent's call]**, from the owner's norms. The owner should look
 | Layer | How | What |
 |---|---|---|
 | `pelhaim-core` | Plain unit tests and `proptest` | Reducer: fixture event sequences lead to expected state. Plan validation: cycles, missing deps, duplicates. Path cover and layering. Train movement rules: never passes an unfinished station. Train numbering collisions. |
-| Adapters, observe | Synthetic fixture homes under `tests/fixtures/{claude,codex}/…` written by hand to match today's shapes, **never real logs** | Parsing every record type listed in §8.1; partial last line; invalid JSON lines; subagent meta linking; `AskUserQuestion` open/close; stall and permission heuristics on a fake clock; the read-only assertion. |
-| Adapters, launch | Fake `claude` and `codex` executables (small Rust test binaries) placed first on `PATH`, replaying recorded stream lines, reading stdin, and exiting with set codes | Spawn args are exactly what §8.2 says; answer routing; exit-code handling; take-over handoff. Fixture streams come from the M2 spike recordings, scrubbed. |
+| Adapters, observe | Synthetic fixture homes under `tests/fixtures/{claude,codex}/…` written by hand to match today's shapes, **never real logs** | Parsing every record type listed in §8.1; partial last line; invalid JSON lines; subagent meta linking; `AskUserQuestion` open/close; stall and permission heuristics on a fake clock; the read-only assertion. **Project tags (§7.7), each for Claude subagent, Claude self-tag and Codex:** tagged (lands on its line); untagged (Unsorted + AssignProject alert); mis-tagged (unknown slug, malformed key such as `Pelhaim-Project:`, tag on line 2, tag inside a code fence); a DISPATCH session with tagged subagents branching to two different lines; a cwd of `~/Developer` that must *not* influence the line; an owner assignment surviving a restart. |
+| Adapters, launch | Fake `claude` and `codex` executables (small Rust test binaries) placed first on `PATH`, replaying recorded stream lines, reading stdin, and exiting with set codes | Spawn args are exactly what §8.2 says, including the tag line and the worktree cwd; answer routing; exit-code handling; take-over handoff; `step_complete` via MCP tool and via final-line JSON; look-alike JSON in a code fence ignored; a turn ending without the signal. Fixture streams come from the M2 spike recordings, scrubbed. |
+| Git flow | Throwaway repos built in temp dirs with `git` | Worktree + branch per train; a dependant branches off its predecessor's branch; a two-predecessor merge, clean and conflicting (red X + alert); no code path can commit to or merge into `main`; push and PR are only reachable through an approved `GitApproval`; "main moved" detection. |
+| Done / sign-off | Engine plus fake checks | Declare → Checking → Done; a failing check returns to Active, then Failed after `max_check_attempts`; flagged steps stop at AwaitingSignoff and don't release dependants; reject-with-note; plan validation rejects design/security steps without flags. |
 | Providers | `wiremock` HTTP server | Anthropic SSE and OpenAI-compatible streaming, tool-call assembly from deltas, errors, retries, key never in logs (assert on captured logs). |
 | Runtime | A scripted fake `Provider` | Approval gate per risk class; path confinement (escape attempts); budgets; `spawn_agent` / `ask_user` round trips; worktree creation. |
 | Store | Temp dirs | Event replay equals projections. Decision-log writer: inserts under the right heading, new section creation, concurrent-modification retry, byte-identical preservation of the rest of the file (golden files). |
@@ -992,10 +1198,13 @@ One command: `cargo test --workspace`. Goldens are updated with `cargo insta rev
   - Question (read-only), Result (opt-in), Stalled;
   - tray, keyboard navigation;
   - `[Log decision]` writer, plus the open-decisions badge from `DECISION-LOG.md`.
+- Project tags (§7.7): the DISPATCH line, the Unsorted line, the AssignProject alert. Plus the one-line addition to the owner's orchestrator rules so it tags every agent it spawns (the edit goes in the setup repo, done by the owner or with the owner's approval).
+- pelhaim only observes the Claude Code orchestrator in M1 (§8.5).
 - Console strip with local commands only.
 - AccessKit basics.
 - **Done when:**
-  - with the owner's real 7 projects configured, every active Claude Code and Codex session shows as a train on the right line;
+  - with the owner's real 7 projects configured, every **tagged** Claude Code and Codex session and agent shows as a train on the right line, and untagged ones land on Unsorted with an assign alert (**[Owner], 2026-11-23**);
+  - the orchestrator session shows on the DISPATCH line, with its subagents branching onto their lines;
   - an `AskUserQuestion` in any session raises a yellow train and an alert within 2 s;
   - answering in the terminal closes it;
   - a decision can be logged into `DECISION-LOG.md` without disturbing the rest of the file;
@@ -1006,8 +1215,11 @@ One command: `cargo test --workspace`. Goldens are updated with `cargo insta rev
 1. A **spike**: record real `claude -p` stream-json and `codex exec --json` sessions, including a permission prompt, a question and a subagent. Settle [Open] Q6 and Q7, and commit scrubbed fixtures.
 2. `launch::claude`, `launch::codex`; answering; take over and detach; dedup with observe.
 3. Dispatcher planning via a launched session with `--json-schema` / `--output-schema` to produce Plan JSON. Plan review alert, `$EDITOR` editing, approval, the scheduler, and cleared-route rendering.
-4. The console sends to the dispatcher; `@train` messages.
-- **Done when:** the owner can type a goal, approve a 4-step plan with one dependency fork, and watch 2 trains run in parallel, answer one question from the board, take over one train in a terminal, and see all of it land on the board.
+4. pelhaim as orchestrator: the routing rules of §8.5, with automatic decision rows.
+5. Git flow (§7.8): worktree and branch per train, stacking, merge conflicts, push/PR approval alerts.
+6. Definition of done (§7.9): `step_complete` (MCP tool or final-line JSON), checks, sign-off states and alerts.
+7. The console sends to the dispatcher; `@train` messages.
+- **Done when:** the owner can type a goal, approve a 4-step plan with one dependency fork, and watch 2 trains run in parallel, each in its own worktree. Along the way they answer one question from the board, take over one train in a terminal, see a dependent station branch off its predecessor's branch, sign off one flagged step, approve one PR (opened, never merged, by pelhaim), and see every decision recorded.
 
 **M3: Direct mode**
 
@@ -1022,7 +1234,7 @@ One command: `cargo test --workspace`. Goldens are updated with `cargo insta rev
 
 Why this order:
 
-- M1 delivers the owner's current orchestrator job, minus answering, with zero risk to running sessions.
+- M1 delivers the owner's current orchestrator job, minus answering, with zero risk to running sessions. It runs alongside the Claude Code orchestrator (**[Owner], 2026-11-23**).
 - M2 adds control over the CLIs the owner already trusts.
 - M3, the biggest build, comes last, once the board and engine are proven.
 
@@ -1041,7 +1253,9 @@ Each has a default so work isn't blocked.
 9. **Tool calling on local models.** Which local models handle native `tools` reliably? Default: native when the server reports it, else the fenced-JSON fallback.
 10. **Non-Latin text** in transcripts and labels. Default: a fallback system font through `cosmic-text` / `swash`, for non-Latin only.
 11. **Station inference in observe mode.** Default: one station per owner prompt (§8.1). The builder may propose better once real data is on the board.
-12. **Line ordering:** fixed config order vs float-on-alert. Default: config order, with lines holding open alerts floated up.
+12. **Line ordering:** fixed config order vs float-on-alert. Default: config order, with lines holding open alerts floated up. DISPATCH is always first and Unsorted always last.
+13. **`step_complete` transport for Claude Launch:** an MCP tool vs the final-line JSON. Default: the MCP tool. Settle in the M2 spike.
+14. **Signing off a step that its dependants already branched from** (for example after reject-with-note produces new commits). Default: mark the dependants "base moved" and offer a rebase; never rebase automatically.
 
 ## 15. Risks
 
@@ -1052,29 +1266,40 @@ Each has a default so work isn't blocked.
 | R3 | The custom renderer eats time: text input, IME, a11y | Medium / medium | Bounded scope (one input widget); egui-for-console fallback (§9.2); scene snapshots keep layout work testable |
 | R4 | Direct-mode tool execution without an OS sandbox | Medium / high | Approval gate defaults to ask; worktree isolation; argv-not-shell; env scrub; no network tool; OS sandbox on the roadmap |
 | R5 | Legibility vs the look: matte colours and a pixel font hurt readability | Medium / medium | `high_contrast` palette; tune the palette on the owner's real display; a11y names; state marks |
-| R6 | Two writers on `DECISION-LOG.md` (pelhaim plus the owner's Claude orchestrator) | Medium / medium | Write only on click; re-read and check hash before an atomic rename; backup; refuse and alert on conflict. Longer-term, the owner picks one writer. |
+| R6 | Two writers on `DECISION-LOG.md` (pelhaim plus the owner's Claude orchestrator) | Medium / medium | Write only on click; re-read and check hash before an atomic rename; backup; refuse and alert on conflict. A single writer becomes possible once pelhaim fully replaces the orchestrator (owner, 2026-11-23). |
 | R7 | Scope: three modes is a lot | High / medium | Strict milestone gates; M1 alone must be worth using daily |
 | R8 | Privacy: transcripts contain secrets and private data | Medium / high | No transcript copies in observe; no bodies in logs; synthetic fixtures only; no telemetry |
 | R9 | Cost runaway in Launch and Direct (parallel trains) | Medium / medium | `max_concurrent`; `--max-budget-usd` for Claude; per-train budgets in Direct; counters on tags |
 | R10 | Film IP | Low / medium | No assets, frames, names or logos; original font; muted, re-derived palette; reference images stay outside the repo |
 | R11 | Heuristic states mislead (a "probably waiting" that isn't) | Medium / low | Label heuristics as such in the alert text; heuristics are configurable and off-switchable |
 | R12 | GPU goldens flaky in CI | Medium / low | Tolerance; lavapipe; fall back to scene snapshots in CI |
+| R13 | The orchestrator forgets the tag, so work lands on Unsorted | Medium / low | Visible Unsorted line; one-click assign remembered per session; the tag rule goes into the owner's global agent rules |
+| R14 | A Launch-mode CLI commits to `main` or pushes on its own, outside pelhaim's mediation | Low / high | Each Launch train's cwd is its worktree on a train branch; CLI permission settings; the owner's global rules; a post-step check that `main` and remotes haven't moved, which raises a red alert |
+| R15 | Stacked branches drift when an upstream station changes after dependants branched | Medium / medium | "Base moved" mark; rebase offered, never automatic; PRs target the predecessor branch |
+| R16 | Weak or missing acceptance checks make "done" mean little | Medium / medium | Checks are run by pelhaim, not the agent; project default check; `Manual` checks force sign-off; plan review shows checks per step |
 
 ## 16. Agent's calls the owner should check
 
+**Status: awaiting owner review** (as of 2026-11-23). None of these has been confirmed yet. Items the owner has since ruled on are noted as such and are no longer open.
+
 These are listed in order of how much they shape the build.
 
-1. The renderer: winit + wgpu + in-house, not macroquad or egui (§9.2).
-2. Engine/adapter split, event-sourced SQLite store (not Postgres), no transcript copies (§6).
-3. Decision log: SQLite is the source of truth; markdown is written only on click, with a safe atomic writer (§7.6).
-4. Train numbers = departure HHMM (§7.3); one block per tool call, never passing an unfinished station (§7.4).
-5. Cleared-route green is a darker green than the working train (§7.2, §9.1).
-6. The matte palette transform (chroma ×0.6, lightness ×0.88) and its start values (§9.1).
-7. Density cuts: ≤4 visible tracks per line, crossovers only for real merges, idle lines fold (§9.1).
-8. Observe stations = one per owner prompt; heuristics for "probably waiting" and "stalled" (§8.1).
-9. Take over = an explicit detach (magenta), with the adapter swapped to observe (§8.2.4).
-10. One popup at a time, plus a tray; ✕ dismisses to the tray, never deletes (§9.4).
-11. Plan editing via `$EDITOR` TOML first, on-board editing later (§9.6).
-12. Security defaults: approval policy, worktree per Direct train, no OS sandbox in v1, no dangerous flags unless set per project (§10).
-13. Config at `~/.config/pelhaim/config.toml`; data at `~/.local/share/pelhaim/` (§6.5–6.6).
-14. Milestones M1–M4 and their acceptance criteria (§13).
+1. The renderer: winit + wgpu + in-house, not macroquad or egui (§9.2). Awaiting owner review.
+2. Engine/adapter split, event-sourced SQLite store (not Postgres), no transcript copies (§6). Awaiting owner review.
+3. Decision log: the SQLite source of truth plus the two-writer export **is now owner-decided** (2026-11-23). Still awaiting review: the on-click mechanics, the hash-checked atomic writer, and automatic decision rows in pelhaim-as-orchestrator (§7.6, §8.5).
+4. Train numbers = departure HHMM (§7.3); one block per tool call, never passing an unfinished station (§7.4). Awaiting owner review.
+5. Cleared-route green is a darker green than the working train (§7.2, §9.1). Awaiting owner review.
+6. The matte palette transform (chroma ×0.6, lightness ×0.88) and its start values (§9.1). Awaiting owner review.
+7. Density cuts: ≤4 visible tracks per line, crossovers only for real merges, idle lines fold (§9.1). Awaiting owner review.
+8. Observe stations = one per owner prompt; heuristics for "probably waiting" and "stalled" (§8.1). Awaiting owner review.
+9. Take over = an explicit detach (magenta), with the adapter swapped to observe (§8.2.4). Awaiting owner review.
+10. One popup at a time, plus a tray; ✕ dismisses to the tray, never deletes (§9.4). Awaiting owner review.
+11. Plan editing via `$EDITOR` TOML first, on-board editing later (§9.6). Awaiting owner review.
+12. Security defaults: approval policy, no OS sandbox in v1, no dangerous flags unless set per project (§10). Worktree per train is now owner-decided (2026-11-23). Awaiting owner review.
+13. Config at `~/.config/pelhaim/config.toml`; data at `~/.local/share/pelhaim/` (§6.5–6.6). Awaiting owner review.
+14. Milestones M1–M4 and their acceptance criteria (§13). Awaiting owner review.
+15. Tag format `pelhaim-project: <slug>` on the first prompt line, and the resolution order; subagents don't inherit a parent's tag (§7.7). Awaiting owner review.
+16. Git mechanics: branch naming, merging a second predecessor into the train branch, PRs targeting the predecessor branch, "base moved" without auto-rebase, the post-step "main moved" check (§7.8). Awaiting owner review.
+17. Checks are run by pelhaim, not the agent; `max_check_attempts = 3`; `Manual` checks force sign-off (§7.9). Awaiting owner review.
+18. `step_complete` as an MCP tool, with final-line JSON as the fallback (§7.9). Awaiting owner review.
+19. Routing-rule enforcement: a required `signoff` field per step, a keyword backstop, and a per-project "park and continue" flag, default off (§8.5). Awaiting owner review.
