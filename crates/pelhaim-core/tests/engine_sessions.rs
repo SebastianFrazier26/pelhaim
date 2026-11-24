@@ -63,9 +63,18 @@ fn tool_open(e: &mut Engine, k: &SessionKey, call: &str, name: &str, at: &str) {
 }
 
 fn tool_close(e: &mut Engine, k: &SessionKey, call: &str, at: &str) {
+    close(e, k, call, false, at);
+}
+
+fn background_launched(e: &mut Engine, k: &SessionKey, call: &str, at: &str) {
+    close(e, k, call, true, at);
+}
+
+fn close(e: &mut Engine, k: &SessionKey, call: &str, launched_only: bool, at: &str) {
     e.apply(ev(Event::ToolClosed {
         key: k.clone(),
         call_id: call.into(),
+        launched_only,
         at: ts(at),
     }));
 }
@@ -535,7 +544,7 @@ proptest! {
                     opened += 1;
                     Event::ToolOpened { key: s1.clone(), call_id: format!("c{opened}"), name: "Bash".into(), at }
                 }
-                1 => Event::ToolClosed { key: s1.clone(), call_id: format!("c{opened}"), at },
+                1 => Event::ToolClosed { key: s1.clone(), call_id: format!("c{opened}"), launched_only: false, at },
                 _ => Event::Activity { key: s1.clone(), at },
             };
             e.apply(ev(input));
@@ -991,4 +1000,210 @@ fn format_untested_marks_train_and_line() {
     let unsorted = s.lines.iter().find(|l| l.key == LineKey::Unsorted).unwrap();
     assert!(unsorted.format_untested);
     assert!(!s.lines[0].format_untested);
+}
+
+fn background_fan_out(e: &mut Engine, s1: &SessionKey, a: &SessionKey) {
+    discover_at(e, s1.clone(), None, None, "2026-11-23T14:00:00Z");
+    first_prompt(
+        e,
+        s1,
+        "pelhaim-project: dispatch\nFan out",
+        "2026-11-23T14:00:05Z",
+    );
+    tool_open(e, s1, "toolu_A", "Agent", "2026-11-23T14:00:10Z");
+    spawn(
+        e,
+        s1,
+        "toolu_A",
+        "Long job",
+        "pelhaim-project: ethica\nGo",
+        "2026-11-23T14:00:10Z",
+    );
+    background_launched(e, s1, "toolu_A", "2026-11-23T14:00:11Z");
+    turn_end(e, s1, "2026-11-23T14:00:15Z");
+    discover_at(e, a.clone(), Some(s1.clone()), None, "2026-11-23T14:00:12Z");
+    link(e, a, s1, "toolu_A", "Long job");
+}
+
+#[test]
+fn background_launch_keeps_child_active_and_parent_green() {
+    let mut e = engine(&["ethica"]);
+    let (s1, a) = (key("S1"), sub("S1", "a1"));
+    background_fan_out(&mut e, &s1, &a);
+    e.apply(ev(Event::Activity {
+        key: a.clone(),
+        at: ts("2026-11-23T14:40:00Z"),
+    }));
+
+    let s = e.snapshot();
+    let (parent, child) = (train(&s, &s1), train(&s, &a));
+    assert_eq!(child.state, TrainState::Working);
+    assert!(!child.position.berthed);
+    assert_eq!(
+        s.stations[&track(&s, &a).stations[0]].status,
+        StationStatus::Active
+    );
+    assert_eq!(parent.state, TrainState::Working);
+    assert!(parent.position.berthed, "the parent's own turn has ended");
+    assert_eq!(parent.counters.turns, 1);
+    assert_eq!(
+        e.effective_last_write(parent.id),
+        Some(ts("2026-11-23T14:40:00Z"))
+    );
+}
+
+#[test]
+fn background_child_discovered_after_parent_idle_turns_parent_green() {
+    let mut e = engine(&["ethica"]);
+    let (s1, a) = (key("S1"), sub("S1", "a1"));
+    discover_at(&mut e, s1.clone(), None, None, "2026-11-23T14:00:00Z");
+    first_prompt(
+        &mut e,
+        &s1,
+        "pelhaim-project: dispatch\nFan out",
+        "2026-11-23T14:00:05Z",
+    );
+    tool_open(&mut e, &s1, "toolu_A", "Agent", "2026-11-23T14:00:10Z");
+    spawn(
+        &mut e,
+        &s1,
+        "toolu_A",
+        "Long job",
+        "pelhaim-project: ethica\nGo",
+        "2026-11-23T14:00:10Z",
+    );
+    background_launched(&mut e, &s1, "toolu_A", "2026-11-23T14:00:11Z");
+    turn_end(&mut e, &s1, "2026-11-23T14:00:15Z");
+    assert_eq!(train(&e.snapshot(), &s1).state, TrainState::Idle);
+
+    discover_at(
+        &mut e,
+        a.clone(),
+        Some(s1.clone()),
+        None,
+        "2026-11-23T14:00:20Z",
+    );
+    assert_eq!(train(&e.snapshot(), &s1).state, TrainState::Working);
+    link(&mut e, &a, &s1, "toolu_A", "Long job");
+    let s = e.snapshot();
+    assert_eq!(train(&s, &a).state, TrainState::Working);
+    assert_eq!(train(&s, &s1).state, TrainState::Working);
+}
+
+#[test]
+fn background_child_finishing_lets_parent_go_idle() {
+    for finish_by_turn_end in [false, true] {
+        let mut e = engine(&["ethica"]);
+        let (s1, a) = (key("S1"), sub("S1", "a1"));
+        background_fan_out(&mut e, &s1, &a);
+        if finish_by_turn_end {
+            turn_end(&mut e, &a, "2026-11-23T14:30:00Z");
+        } else {
+            e.apply(ev(Event::SubagentFinished {
+                key: a.clone(),
+                at: ts("2026-11-23T14:30:00Z"),
+            }));
+        }
+        let s = e.snapshot();
+        let parent = train(&s, &s1);
+        assert_eq!(
+            train(&s, &a).state,
+            TrainState::Done,
+            "turn_end={finish_by_turn_end}"
+        );
+        assert!(train(&s, &a).position.berthed);
+        assert_eq!(
+            parent.state,
+            TrainState::Idle,
+            "turn_end={finish_by_turn_end}"
+        );
+        assert_eq!(
+            e.effective_last_write(parent.id),
+            Some(ts("2026-11-23T14:00:15Z"))
+        );
+    }
+}
+
+#[test]
+fn background_child_gone_lets_parent_go_idle() {
+    let mut e = engine(&["ethica"]);
+    let (s1, a) = (key("S1"), sub("S1", "a1"));
+    background_fan_out(&mut e, &s1, &a);
+    e.apply(ev(Event::SessionGone { key: a.clone() }));
+    assert_eq!(train(&e.snapshot(), &s1).state, TrainState::Idle);
+}
+
+#[test]
+fn parent_stays_green_until_last_background_child_finishes() {
+    let mut e = engine(&["ethica"]);
+    let (s1, a, b) = (key("S1"), sub("S1", "a1"), sub("S1", "b2"));
+    discover_at(&mut e, s1.clone(), None, None, "2026-11-23T14:00:00Z");
+    first_prompt(
+        &mut e,
+        &s1,
+        "pelhaim-project: dispatch\nFan out",
+        "2026-11-23T14:00:05Z",
+    );
+    for (call, child) in [("toolu_A", &a), ("toolu_B", &b)] {
+        tool_open(&mut e, &s1, call, "Agent", "2026-11-23T14:00:10Z");
+        spawn(
+            &mut e,
+            &s1,
+            call,
+            "job",
+            "pelhaim-project: ethica\nGo",
+            "2026-11-23T14:00:10Z",
+        );
+        background_launched(&mut e, &s1, call, "2026-11-23T14:00:11Z");
+        discover_at(
+            &mut e,
+            child.clone(),
+            Some(s1.clone()),
+            None,
+            "2026-11-23T14:00:12Z",
+        );
+        link(&mut e, child, &s1, call, "job");
+    }
+    turn_end(&mut e, &s1, "2026-11-23T14:00:15Z");
+    turn_end(&mut e, &a, "2026-11-23T14:10:00Z");
+    assert_eq!(train(&e.snapshot(), &s1).state, TrainState::Working);
+    turn_end(&mut e, &b, "2026-11-23T14:20:00Z");
+    assert_eq!(train(&e.snapshot(), &s1).state, TrainState::Idle);
+}
+
+#[test]
+fn foreground_agent_close_still_finishes_child_and_parent_idles() {
+    let mut e = engine(&["ethica"]);
+    let (s1, a) = (key("S1"), sub("S1", "a1"));
+    discover_at(&mut e, s1.clone(), None, None, "2026-11-23T14:00:00Z");
+    first_prompt(
+        &mut e,
+        &s1,
+        "pelhaim-project: dispatch\nFan out",
+        "2026-11-23T14:00:05Z",
+    );
+    tool_open(&mut e, &s1, "toolu_A", "Agent", "2026-11-23T14:00:10Z");
+    spawn(
+        &mut e,
+        &s1,
+        "toolu_A",
+        "Job",
+        "pelhaim-project: ethica\nGo",
+        "2026-11-23T14:00:10Z",
+    );
+    discover_at(
+        &mut e,
+        a.clone(),
+        Some(s1.clone()),
+        None,
+        "2026-11-23T14:00:12Z",
+    );
+    link(&mut e, &a, &s1, "toolu_A", "Job");
+    tool_close(&mut e, &s1, "toolu_A", "2026-11-23T14:05:00Z");
+    assert_eq!(train(&e.snapshot(), &a).state, TrainState::Done);
+    assert_eq!(train(&e.snapshot(), &s1).state, TrainState::Working);
+    turn_end(&mut e, &s1, "2026-11-23T14:05:10Z");
+    let s = e.snapshot();
+    assert_eq!(train(&s, &s1).state, TrainState::Idle);
+    assert!(train(&s, &a).position.berthed);
 }

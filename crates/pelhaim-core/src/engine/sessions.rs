@@ -81,6 +81,7 @@ impl Engine {
         if let Some(at) = e.at() {
             self.touch(id, at);
         }
+        let parent_before = self.trains[&id].parent;
         match e {
             Event::FormatUntested { .. } => self.train_mut(id).version_untested = true,
             Event::TitleChanged { title, .. } => {
@@ -142,11 +143,16 @@ impl Engine {
                     .insert(call_id, (name, at));
                 self.tool_opened(id);
             }
-            Event::ToolClosed { call_id, .. } => {
+            Event::ToolClosed {
+                call_id,
+                launched_only,
+                ..
+            } => {
                 if let Some(calls) = self.open_calls.get_mut(&key) {
                     calls.remove(&call_id);
                 }
-                if let Some(p) = self.spawn_requests.get_mut(&call_id)
+                if !launched_only
+                    && let Some(p) = self.spawn_requests.get_mut(&call_id)
                     && p.parent == key
                 {
                     p.closed = true;
@@ -167,6 +173,9 @@ impl Engine {
                     TrainState::Idle
                 };
                 t.counters.turns += 1;
+                if !subagent {
+                    self.settle_after_turn(id);
+                }
             }
             Event::WorkStarted { .. } => self.set_working(id),
             Event::SubagentFinished { .. } => self.finish(id),
@@ -182,7 +191,32 @@ impl Engine {
             Event::SessionGone { .. } => self.remove(id, &key),
             _ => {}
         }
+        let parent_after = self.trains.get(&id).and_then(|t| t.parent);
+        if let Some(p) = parent_after.or(parent_before) {
+            self.settle_after_turn(p);
+        }
         true
+    }
+
+    /// A main session whose own turn has ended stays Working while any of its
+    /// subagents is not Done: background subagents keep running after the
+    /// parent's Agent call returns its launch acknowledgement (Review Focus 1).
+    fn settle_after_turn(&mut self, id: TrainId) {
+        let Some(t) = self.trains.get(&id) else {
+            return;
+        };
+        if !t.position.berthed || !matches!(t.state, TrainState::Idle | TrainState::Working) {
+            return;
+        }
+        let busy = self
+            .trains
+            .values()
+            .any(|c| c.parent == Some(id) && c.state != TrainState::Done);
+        self.train_mut(id).state = if busy {
+            TrainState::Working
+        } else {
+            TrainState::Idle
+        };
     }
 
     fn discover(&mut self, d: Discovered) -> bool {
@@ -262,6 +296,9 @@ impl Engine {
         }
         self.relabel(&d.key);
         self.resolve(&d.key);
+        if let Some(p) = parent {
+            self.settle_after_turn(p);
+        }
         true
     }
 
@@ -408,6 +445,7 @@ impl Engine {
         if closed {
             self.finish(cid);
         }
+        self.settle_after_turn(pid);
     }
 
     fn relabel(&mut self, key: &SessionKey) {

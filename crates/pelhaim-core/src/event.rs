@@ -79,6 +79,9 @@ pub enum Event {
     ToolClosed {
         key: SessionKey,
         call_id: String,
+        /// The result is only a background Agent/Task launch acknowledgement,
+        /// not the subagent's finish.
+        launched_only: bool,
         at: Ts,
     },
     QuestionAsked {
