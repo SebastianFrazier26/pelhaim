@@ -24,6 +24,12 @@ expression: "(cr, lines, hits)"
   "tail line 11",
 ], [
   (R(
+    x: 349.5,
+    y: 211.5,
+    w: 890.5,
+    h: 463.5,
+  ), "Blocker"),
+  (R(
     x: 1205.5,
     y: 238.5,
     w: 18.0,

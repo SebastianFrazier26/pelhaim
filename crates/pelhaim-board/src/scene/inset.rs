@@ -111,6 +111,7 @@ pub fn draw(out: &mut Scene, inp: &SceneInput, layout: &Layout) {
     let r = frame_rect(inp.viewport);
     let body = popup::frame(out, &ov, r);
     popup::tab(out, &ov, r, "Train");
+    ov.hit(out, popup::frame_extent(r), Hit::Blocker);
 
     let left = R {
         w: body.w * BOARD_FRAC,

@@ -17,6 +17,12 @@ pub struct R {
     pub h: f32,
 }
 
+impl R {
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        x >= self.x && x < self.x + self.w && y >= self.y && y < self.y + self.h
+    }
+}
+
 #[derive(Clone, PartialEq, Debug, Serialize)]
 pub enum Prim {
     Rect { r: R, color: Rgba, aa: bool },

@@ -414,6 +414,16 @@ pub(crate) fn frame(out: &mut Scene, ov: &Ov, r: R) -> R {
     body
 }
 
+/// The frame's whole extent, offset lines and tab included, for the blocking hit.
+pub(crate) fn frame_extent(r: R) -> R {
+    R {
+        x: r.x - 7.0,
+        y: r.y - 9.0,
+        w: r.w + 7.0,
+        h: r.h + 9.0,
+    }
+}
+
 pub(crate) fn tab(out: &mut Scene, ov: &Ov, r: R, text: &str) {
     let t = R {
         x: r.x + 10.0,
@@ -463,6 +473,8 @@ pub fn draw(out: &mut Scene, inp: &SceneInput, layout: &Layout) {
     }
     let body = frame(out, &ov, r);
     tab(out, &ov, r, plan.tab);
+    // Pushed before the buttons: hits resolve last-pushed-first, so they stay on top of it.
+    ov.hit(out, frame_extent(r), Hit::Blocker);
     let id = plan.alert.clone();
     let hit = |out: &mut Scene, rr: R, button: AlertButton| {
         ov.hit(

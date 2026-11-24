@@ -51,15 +51,31 @@ pub struct Scene {
     pub hits: Vec<(R, Hit)>,
 }
 
+impl Scene {
+    /// The topmost hit under a screen point: the last one pushed wins.
+    pub fn hit_at(&self, x: f32, y: f32) -> Option<&Hit> {
+        self.hits
+            .iter()
+            .rev()
+            .find(|(r, _)| r.contains(x, y))
+            .map(|(_, h)| h)
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Hit {
     Train(TrainId),
     Stub(LineKey),
-    Alert { id: AlertId, button: AlertButton },
+    Alert {
+        id: AlertId,
+        button: AlertButton,
+    },
     TrayItem(AlertId),
     Console,
     Lamp,
     InsetAction(InsetAction),
+    /// A popup's or the inset's background: swallows the click so it cannot reach the board.
+    Blocker,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
