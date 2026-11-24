@@ -3,13 +3,13 @@ use std::path::PathBuf;
 
 use pelhaim_core::{
     Event, QOption, Question, SessionKey, TagParse, Tool, Ts, parse_tag, sanitize_line,
-    title_from_prompt, truncate_chars,
+    title_from_prompt,
 };
 use serde_json::Value;
 
 use super::version::{CLAUDE_TESTED, is_untested};
+use super::{str_at, transcript_tail};
 
-const TAIL_MAX: usize = 120;
 const LAUNCH_ACK: &str = "Async agent launched";
 
 struct OpenCall {
@@ -36,10 +36,6 @@ pub struct ClaudeFileParser {
     prompted: bool,
     /// Agent ids of this session's background launches, until a task notification finishes them.
     launched: HashSet<String>,
-}
-
-fn str_at<'a>(v: &'a Value, path: &[&str]) -> Option<&'a str> {
-    path.iter().try_fold(v, |v, k| v.get(k))?.as_str()
 }
 
 fn text_blocks(blocks: &[Value]) -> impl Iterator<Item = &str> {
@@ -372,12 +368,7 @@ impl ClaudeFileParser {
                 Some("tool_use") => self.tool_use(block, at, &mut out),
                 Some("text") => {
                     let text = block.get("text").and_then(Value::as_str).unwrap_or("");
-                    for line in text.lines().map(sanitize_line).filter(|l| !l.is_empty()) {
-                        out.push(Event::TranscriptTail {
-                            key: self.key.clone(),
-                            line: truncate_chars(&line, TAIL_MAX),
-                        });
-                    }
+                    out.extend(transcript_tail(&self.key, text));
                 }
                 _ => {}
             }

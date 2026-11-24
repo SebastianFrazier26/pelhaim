@@ -101,3 +101,19 @@ pub fn discover_claude(home: &Path, window: Duration, now: SystemTime) -> Vec<Cl
     subs.sort_by_key(order);
     mains.into_iter().chain(subs).map(|f| f.file).collect()
 }
+
+/// `<home>/sessions/YYYY/MM/DD/rollout-*.jsonl`, by mtime ascending.
+pub fn discover_codex(home: &Path, window: Duration, now: SystemTime) -> Vec<PathBuf> {
+    let fresh = |t: SystemTime| now.duration_since(t).ok().is_none_or(|age| age <= window);
+    let mut found: Vec<(SystemTime, PathBuf)> = entries(&home.join("sessions"))
+        .iter()
+        .flat_map(|year| entries(year))
+        .flat_map(|month| entries(&month))
+        .flat_map(|day| entries(&day))
+        .filter(|path| stem_with(path, "rollout-", ".jsonl").is_some())
+        .filter_map(|path| Some((file_mtime(&path)?, path)))
+        .filter(|(mtime, _)| fresh(*mtime))
+        .collect();
+    found.sort();
+    found.into_iter().map(|(_, path)| path).collect()
+}
