@@ -252,7 +252,10 @@ pub fn parse_duration(s: &str) -> Result<Option<Duration>, ConfigError> {
     let bad = || ConfigError::Duration {
         value: s.to_string(),
     };
-    let (num, unit) = s.split_at(s.len().saturating_sub(1));
+    let Some((i, _)) = s.char_indices().next_back() else {
+        return Err(bad());
+    };
+    let (num, unit) = s.split_at(i);
     if num.is_empty() || !num.bytes().all(|b| b.is_ascii_digit()) {
         return Err(bad());
     }
@@ -724,6 +727,9 @@ mod tests {
             " 1s",
             "1 s",
             "OFF",
+            "10分",
+            "5µ",
+            "µ",
             "99999999999999999999h",
         ] {
             assert!(parse_duration(bad).is_err(), "{bad:?} should be rejected");
