@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use chrono::FixedOffset;
 use pelhaim_core::engine::{EngineConfig, ProjectCfg};
-use pelhaim_core::{DISPATCH_SLUG, is_valid_slug};
+use pelhaim_core::{DISPATCH_SLUG, is_valid_slug, sanitize_line};
 use serde::{Deserialize, Deserializer};
 
 use crate::env::{Env, expand_tilde};
@@ -362,6 +362,26 @@ impl Config {
             if !seen.insert(p.slug.as_str()) {
                 return Err(invalid(&key, format!("duplicate slug {:?}", p.slug)));
             }
+            // The decision-log writer matches headings on the raw key but writes a new
+            // heading sanitised, so a key sanitising changes would never match its own
+            // section and every export would append another one.
+            let keys = [
+                ("name", Some(&p.name)),
+                ("log_section", p.log_section.as_ref()),
+            ];
+            for (field, value) in keys {
+                if let Some(v) = value
+                    && (v.is_empty() || sanitize_line(v) != *v)
+                {
+                    return Err(invalid(
+                        &format!("project[{i}].{field}"),
+                        format!(
+                            "{v:?} must be non-empty, with no control characters, \
+                             no leading or trailing spaces and no double spaces"
+                        ),
+                    ));
+                }
+            }
         }
         let homes = [self.claude_home(env), self.codex_home(env)];
         let checks = [
@@ -663,6 +683,36 @@ mod tests {
         );
         assert!(msg.contains("project[1].slug"), "{msg}");
         assert!(msg.contains("duplicate"), "{msg}");
+    }
+
+    #[test]
+    fn empty_or_unclean_section_keys_rejected() {
+        let cases = [
+            ("name = \"\"", "project[0].name"),
+            ("name = \"   \"", "project[0].name"),
+            ("name = \"Eth\\u0007ica\"", "project[0].name"),
+            ("name = \"Two  spaces\"", "project[0].name"),
+            ("name = \"E\"\nlog_section = \"\"", "project[0].log_section"),
+            (
+                "name = \"E\"\nlog_section = \" Ethica\"",
+                "project[0].log_section",
+            ),
+            (
+                "name = \"E\"\nlog_section = \"a\\nb\"",
+                "project[0].log_section",
+            ),
+        ];
+        for (fields, key) in cases {
+            let msg = err_text(&format!("[[project]]\nslug = \"e\"\n{fields}\n"));
+            assert!(msg.contains(key), "{fields}: {msg}");
+        }
+        assert!(
+            load_str(
+                "[[project]]\nslug = \"e\"\nname = \"E\"\nlog_section = \"ethica (new)\"\n",
+                MapEnv::new("/tmp/h")
+            )
+            .is_ok()
+        );
     }
 
     #[test]

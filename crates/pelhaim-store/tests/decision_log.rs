@@ -378,3 +378,54 @@ fn open_decisions_counted_per_project() {
     let crlf = BASE.replace('\n', "\r\n");
     assert_eq!(open_decisions(&crlf, &ps), open);
 }
+
+// A `DecisionLogged` lost to a failed persist leaves the alert unlogged after a
+// restart, so the owner can log it again on a later day under a recycled id.
+#[test]
+fn same_source_alert_logged_again_later_is_not_duplicated() {
+    let (_dir, path) = temp_log(BASE);
+    let first = Decision {
+        source_alert: Some(pelhaim_core::AlertId("q:claude:S1:toolu_q".into())),
+        ..c1()
+    };
+    write_decision(&path, &pelhaim(), &first).unwrap();
+    let again = Decision {
+        id: DecisionId(1),
+        date: NaiveDate::from_ymd_opt(2026, 11, 25).unwrap(),
+        ..first.clone()
+    };
+    write_decision(&path, &pelhaim(), &again).unwrap();
+    let out = fs::read_to_string(&path).unwrap();
+    assert_eq!(out.matches("Stage C1: Proceed").count(), 1, "{out}");
+
+    let other_alert = Decision {
+        source_alert: Some(pelhaim_core::AlertId("q:claude:S2:toolu_r".into())),
+        ..again
+    };
+    write_decision(&path, &pelhaim(), &other_alert).unwrap();
+    let out = fs::read_to_string(&path).unwrap();
+    assert_eq!(out.matches("Stage C1: Proceed").count(), 2, "{out}");
+}
+
+#[test]
+fn non_project_headings_never_match_a_project() {
+    for (name, heading) in [
+        ("Standing", "## Standing rules"),
+        ("How", "## How to use this log"),
+    ] {
+        let p = project("p", name, None);
+        let d = decision(9, "Pick: one", "Which?");
+        let out = insert_entry(BASE, &p, &render_entry(&d, "\n"));
+        let own = out
+            .find(&format!("## {name}\n"))
+            .expect("own section created");
+        let entry = out.find("Pick: one").unwrap();
+        assert!(own < entry, "{name}");
+        let after_heading = out.find(heading).unwrap();
+        assert!(
+            !(after_heading < entry && out[after_heading..entry].matches("\n## ").count() == 0),
+            "{name}: entry landed under {heading}"
+        );
+        assert!(open_decisions(BASE, &[p])["p"].is_empty());
+    }
+}

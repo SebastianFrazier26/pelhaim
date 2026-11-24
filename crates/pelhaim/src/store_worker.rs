@@ -86,6 +86,10 @@ impl Worker {
             StoreJob::Persist(ev, at) => {
                 if let Err(e) = self.store.append(&ev, at) {
                     tracing::error!(kind = owner_kind(&ev), error = %e, "persisting owner event failed");
+                    self.reply(Event::StoreWriteFailed {
+                        kind: owner_kind(&ev).to_string(),
+                        reason: e.to_string(),
+                    });
                 }
             }
             StoreJob::Export(d) => {
@@ -252,6 +256,44 @@ mod tests {
         let doc = std::fs::read_to_string(&f.log).unwrap();
         assert_eq!(doc.matches("Corpus: synthetic").count(), 1, "{doc}");
         assert_eq!(doc.matches("pelhaim:decision:1:").count(), 1);
+    }
+
+    #[test]
+    fn persist_failure_raises_an_event_and_a_later_relog_is_not_duplicated() {
+        let f = fixture(Some(LOG));
+        let d = decision("ethica");
+        {
+            let (w, mut rx) = worker(&f);
+            rusqlite::Connection::open(&f.db)
+                .unwrap()
+                .execute_batch("DROP TABLE events")
+                .unwrap();
+            w.send(StoreJob::Persist(
+                OwnerEvent::DecisionLogged(d.clone()),
+                chrono::Utc::now(),
+            ));
+            assert!(matches!(
+                recv(&mut rx),
+                Event::StoreWriteFailed { kind, .. } if kind == "DecisionLogged"
+            ));
+            w.send(StoreJob::Export(d.clone()));
+            assert!(matches!(recv(&mut rx), Event::DecisionExported { .. }));
+        }
+        // After a restart nothing records the logged alert, so the owner logs it
+        // again on a later day and the id restarts at 1.
+        let again = Decision {
+            date: chrono::NaiveDate::from_ymd_opt(2026, 11, 26).unwrap(),
+            ..d
+        };
+        let (w, mut rx) = worker(&Fixture {
+            db: f.db.with_file_name("fresh.db"),
+            log: f.log.clone(),
+            _dir: tempfile::tempdir().unwrap(),
+        });
+        w.send(StoreJob::Export(again));
+        assert!(matches!(recv(&mut rx), Event::DecisionExported { .. }));
+        let doc = std::fs::read_to_string(&f.log).unwrap();
+        assert_eq!(doc.matches("Corpus: synthetic").count(), 1, "{doc}");
     }
 
     #[test]

@@ -54,6 +54,67 @@ fn content_text(content: Option<&Value>) -> String {
     }
 }
 
+/// The answers alone, joined in question order. `toolUseResult.answers` maps
+/// question text to answer; without it, the harness sentence around the
+/// `"Q"="A"` pairs is parsed, so its boilerplate never reaches a title.
+fn question_answer(use_result: Option<&Value>, content: Option<&Value>) -> String {
+    if let Some(answers) = use_result
+        .and_then(|r| r.get("answers"))
+        .and_then(Value::as_object)
+    {
+        let ordered: Vec<&str> = use_result
+            .and_then(|r| r.get("questions"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|q| q.get("question").and_then(Value::as_str))
+            .filter_map(|q| answers.get(q).and_then(Value::as_str))
+            .collect();
+        let picked = if ordered.is_empty() {
+            answers.values().filter_map(Value::as_str).collect()
+        } else {
+            ordered
+        };
+        if !picked.is_empty() {
+            return picked.join(", ");
+        }
+    }
+    let text = content_text(content);
+    let pairs = answer_pairs(&text);
+    if pairs.is_empty() {
+        text
+    } else {
+        pairs.join(", ")
+    }
+}
+
+const ANSWER_PREFIXES: [&str; 2] = ["Your questions have been answered: ", "The user answered: "];
+
+/// An answer ends at a quote followed by `, "` (next pair), `.` or the end;
+/// quotes inside a question or answer are ambiguous in this format.
+fn answer_pairs(text: &str) -> Vec<&str> {
+    let trimmed = text.trim_start();
+    let Some(mut rest) = ANSWER_PREFIXES.iter().find_map(|p| trimmed.strip_prefix(p)) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    while let Some(body) = rest.strip_prefix('"') {
+        let Some((_, after_q)) = body.split_once("\"=\"") else {
+            break;
+        };
+        let end = after_q.match_indices('"').map(|(i, _)| i).find(|&i| {
+            let tail = &after_q[i + 1..];
+            tail.is_empty() || tail.starts_with(", \"") || tail.starts_with('.')
+        });
+        let Some(end) = end else {
+            break;
+        };
+        out.push(&after_q[..end]);
+        rest = after_q[end + 1..].strip_prefix(", ").unwrap_or("");
+    }
+    out
+}
+
 fn first_text(content: Option<&Value>) -> Option<&str> {
     match content? {
         Value::String(s) => Some(s),
@@ -264,12 +325,14 @@ impl ClaudeFileParser {
             })
             .unwrap_or_default();
         if !results.is_empty() {
-            let record_agent = (results.len() == 1)
+            let single = results.len() == 1;
+            let record_agent = single
                 .then(|| str_at(record, &["toolUseResult", "agentId"]))
                 .flatten();
+            let use_result = record.get("toolUseResult").filter(|_| single);
             return results
                 .into_iter()
-                .flat_map(|r| self.tool_result(r, record_agent, at))
+                .flat_map(|r| self.tool_result(r, record_agent, use_result, at))
                 .collect();
         }
 
@@ -312,7 +375,13 @@ impl ClaudeFileParser {
         })
     }
 
-    fn tool_result(&mut self, block: &Value, record_agent: Option<&str>, at: Ts) -> Vec<Event> {
+    fn tool_result(
+        &mut self,
+        block: &Value,
+        record_agent: Option<&str>,
+        use_result: Option<&Value>,
+        at: Ts,
+    ) -> Vec<Event> {
         let Some(id) = block.get("tool_use_id").and_then(Value::as_str) else {
             return Vec::new();
         };
@@ -322,7 +391,7 @@ impl ClaudeFileParser {
             out.push(Event::QuestionAnswered {
                 key: self.key.clone(),
                 call_id: id.to_string(),
-                answer: content_text(content),
+                answer: question_answer(use_result, content),
                 at,
             });
         }

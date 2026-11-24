@@ -87,6 +87,9 @@ impl Engine {
             Event::DecisionExportFailed { id, reason } => {
                 return self.decision_export_failed(id, reason);
             }
+            Event::StoreWriteFailed { kind, reason } => {
+                return self.store_write_failed(&kind, &reason);
+            }
             Event::OpenDecisionCounts { counts } => {
                 self.open_counts = counts;
                 return true;
@@ -626,13 +629,15 @@ impl Engine {
         }
     }
 
-    /// An owner assignment covers the session's untagged subagents that
-    /// started at or after it.
+    /// A project assignment covers the session's untagged subagents that
+    /// started at or after it. DISPATCH is never inherited (§7.7), matching
+    /// `[dispatch].sessions`, so an orchestrator's untagged children stay visible.
     fn parent_assignment_for(&self, key: &SessionKey) -> Option<&AssignTarget> {
         let child = &self.trains[&self.by_key[key]];
         let parent = self.trains.get(&child.parent?)?;
         let (target, at) = self.assignments.get(&parent.session)?;
-        (child.counters.started >= *at).then_some(target)
+        (matches!(target, AssignTarget::Project(_)) && child.counters.started >= *at)
+            .then_some(target)
     }
 
     fn clear_forks_of(&mut self, track: crate::ids::TrackId) {

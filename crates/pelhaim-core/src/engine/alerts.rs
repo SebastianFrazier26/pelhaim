@@ -8,13 +8,14 @@ use crate::model::{
     TrainState,
 };
 use crate::tag::closest_slug;
-use crate::text::truncate_chars;
+use crate::text::{sanitize_line, truncate_chars};
 
 /// Calls that legitimately stay open with no writes: a question is its own
 /// alert, and Agent/Task wait on a subagent (Review Focus 1).
 const PERMISSION_EXEMPT: [&str; 3] = ["AskUserQuestion", "Agent", "Task"];
 
 const RESULT_CHARS: usize = 600;
+const ANSWER_CHARS: usize = 120;
 
 /// Whether a subagent keeps its parent green and counts as its activity.
 pub(super) fn child_active(s: &TrainState) -> bool {
@@ -113,7 +114,7 @@ impl Engine {
         let aid = AlertId(format!("q:{}:{call_id}", key.0));
         if let Some(a) = self.alerts.iter_mut().find(|a| a.id == aid && a.is_open()) {
             a.state = AlertState::Answered {
-                answer,
+                answer: truncate_chars(&sanitize_line(&answer), ANSWER_CHARS),
                 by: AnsweredBy::Terminal,
                 at,
             };

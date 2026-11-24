@@ -305,3 +305,33 @@ fn newer_schema_is_refused() {
         .unwrap();
     assert!(Store::open(&path).is_err());
 }
+
+// A concurrent `pelhaim decisions` or `--headless` reader must not make the
+// board's writes fail with SQLITE_BUSY.
+#[test]
+fn append_succeeds_while_another_connection_reads_or_briefly_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("nested/data/pelhaim.db");
+    let mut s = Store::open(&path).unwrap();
+    let dismissed = |i: u32| OwnerEvent::Dismissed {
+        alert: AlertId(format!("a{i}")),
+    };
+
+    let reader = Connection::open(&path).unwrap();
+    reader.execute_batch("BEGIN").unwrap();
+    let _: i64 = reader
+        .query_row("SELECT count(*) FROM events", [], |r| r.get(0))
+        .unwrap();
+    s.append(&dismissed(1), t(1)).unwrap();
+    reader.execute_batch("COMMIT").unwrap();
+
+    let writer = Connection::open(&path).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        writer.execute_batch("COMMIT").unwrap();
+    });
+    s.append(&dismissed(2), t(2)).unwrap();
+    release.join().unwrap();
+    assert_eq!(s.load().unwrap().tray.len(), 2);
+}

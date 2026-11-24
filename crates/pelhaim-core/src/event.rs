@@ -141,6 +141,11 @@ pub enum Event {
         id: DecisionId,
         reason: String,
     },
+    /// An owner event the store could not persist; `kind` names the event.
+    StoreWriteFailed {
+        kind: String,
+        reason: String,
+    },
     /// Keyed by project slug.
     OpenDecisionCounts {
         counts: BTreeMap<String, u32>,

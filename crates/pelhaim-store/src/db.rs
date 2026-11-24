@@ -77,6 +77,8 @@ impl From<chrono::ParseError> for StoreError {
     }
 }
 
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Owner events plus their projections. Observe-derived state is never
 /// stored; it is rebuilt from the session files on disk.
 pub struct Store {
@@ -89,6 +91,10 @@ impl Store {
             std::fs::create_dir_all(parent)?;
         }
         let mut conn = Connection::open(path)?;
+        // WAL lets `pelhaim decisions` or `--headless` read while the board writes;
+        // the timeout is set explicitly because rusqlite's 5 s default may change.
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
         migrate(&mut conn)?;
         Ok(Store { conn })
     }

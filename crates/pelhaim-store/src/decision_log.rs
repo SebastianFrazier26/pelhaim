@@ -9,6 +9,9 @@ use sha2::{Digest, Sha256};
 const OPEN_HEADING: &str = "### Open decisions (need you)";
 const DECIDED_HEADING: &str = "### Decided";
 const STANDING_RULES: &str = "## Standing rules";
+/// `## ` headings of the log's own scaffolding, never a project's section, so a
+/// project named "Standing" or "How" cannot insert into them.
+const NON_PROJECT_HEADINGS: [&str; 2] = ["standing rules", "how to use this log"];
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LogProject {
@@ -57,13 +60,41 @@ fn io_err(what: &str, path: &Path, e: std::io::Error) -> DecisionLogError {
     DecisionLogError::Io(format!("{what} {}: {e}", path.display()))
 }
 
+const MARKER_OPEN: &str = "<!-- pelhaim:decision:";
+
 /// Makes the export idempotent per decision: a crash between the rename and recording
 /// `DecisionExported` replays the export, which then finds this marker and skips.
 /// The content hash keeps a recycled id (after a store reset) from matching an old entry.
+/// An alert-backed decision hashes its source alert instead of its date: a lost
+/// `DecisionLogged` lets the owner log the same alert again on a later day, under a
+/// recycled id, and that must still match the entry already written.
+fn content_hash(d: &Decision) -> String {
+    let input = match &d.source_alert {
+        Some(alert) => format!("alert:{}\n{}", alert.0, d.title),
+        None => format!("{}\n{}", d.date.format("%Y-%m-%d"), d.title),
+    };
+    Sha256::digest(input)[..4]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 fn marker(d: &Decision) -> String {
-    let digest = Sha256::digest(format!("{}\n{}", d.date.format("%Y-%m-%d"), d.title));
-    let h8: String = digest[..4].iter().map(|b| format!("{b:02x}")).collect();
-    format!("<!-- pelhaim:decision:{}:{h8} -->", d.id.0)
+    format!("{MARKER_OPEN}{}:{} -->", d.id.0, content_hash(d))
+}
+
+/// Any id: an alert-backed entry matches by hash alone.
+fn already_written(doc: &str, d: &Decision) -> bool {
+    if d.source_alert.is_none() {
+        return doc.contains(&marker(d));
+    }
+    let hash = content_hash(d);
+    doc.match_indices(MARKER_OPEN).any(|(i, _)| {
+        doc[i + MARKER_OPEN.len()..]
+            .split_once(" -->")
+            .and_then(|(body, _)| body.rsplit_once(':'))
+            .is_some_and(|(_, h)| h == hash)
+    })
 }
 
 pub fn render_entry(d: &Decision, eol: &str) -> String {
@@ -122,11 +153,17 @@ fn heading_matches(heading: &str, key: &str) -> bool {
     }
 }
 
+fn is_project_heading(heading: &str) -> bool {
+    let h = heading.trim().to_lowercase();
+    !NON_PROJECT_HEADINGS.contains(&h.as_str())
+}
+
 /// Index of the matching `## ` line, and the index one past the section's last line.
 fn find_section(ls: &[Line<'_>], key: &str) -> Option<(usize, usize)> {
-    let head = ls
-        .iter()
-        .position(|l| l.heading2().is_some_and(|h| heading_matches(h, key)))?;
+    let head = ls.iter().position(|l| {
+        l.heading2()
+            .is_some_and(|h| is_project_heading(h) && heading_matches(h, key))
+    })?;
     let end = ls[head + 1..]
         .iter()
         .position(Line::is_section_end)
@@ -211,14 +248,13 @@ pub fn write_decision_with_hook(
         .into_owned();
     let tmp = dir.join(format!(".{file_name}.pelhaim-tmp-{}", std::process::id()));
     let bak = dir.join(format!("{file_name}.pelhaim-bak"));
-    let marker = marker(d);
 
     for _ in 0..2 {
         let before = fs::read(&target).map_err(|e| io_err("reading", &target, e))?;
         let hash = Sha256::digest(&before);
         let doc = std::str::from_utf8(&before)
             .map_err(|e| DecisionLogError::Io(format!("{} is not UTF-8: {e}", target.display())))?;
-        if doc.contains(&marker) {
+        if already_written(doc, d) {
             return Ok(());
         }
         let new = insert_entry(doc, p, &render_entry(d, eol_of(doc)));

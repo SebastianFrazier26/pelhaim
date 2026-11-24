@@ -9,6 +9,8 @@ use crate::model::{
 use crate::text::truncate_chars;
 
 const QUESTION_TITLE_CHARS: usize = 60;
+/// §7.6: a bold one-line title.
+const DECISION_TITLE_CHARS: usize = 160;
 
 impl Engine {
     pub(super) fn on_command(&mut self, c: Command) -> bool {
@@ -62,8 +64,8 @@ impl Engine {
         }
     }
 
-    /// Applies to the session's train and to its untagged subagents that start
-    /// at or after `at` (resolved in `parent_assignment_for`), now or later.
+    /// Applies to the session's train and, for a project, to its untagged
+    /// subagents that start at or after `at` (see `parent_assignment_for`).
     fn assign(&mut self, session: SessionKey, target: AssignTarget, at: Ts) {
         self.assignments.insert(session.clone(), (target, at));
         let Some(&id) = self.by_key.get(&session) else {
@@ -270,7 +272,10 @@ impl Engine {
                     .map(|q| q.question.as_str())
                     .collect::<Vec<_>>()
                     .join("; ");
-                (format!("{head}: {answer}"), why)
+                (
+                    truncate_chars(&format!("{head}: {answer}"), DECISION_TITLE_CHARS),
+                    why,
+                )
             }
             AlertKind::AssignProject { session, .. } => {
                 let target = self
@@ -340,6 +345,22 @@ impl Engine {
             train,
             line,
             format!("Decision log not written: {reason}"),
+            self.now,
+        );
+        true
+    }
+
+    /// One alert while it stays open, so a locked database cannot flood the tray.
+    pub(super) fn store_write_failed(&mut self, kind: &str, reason: &str) -> bool {
+        let id = AlertId("store-failure".into());
+        if self.alerts.iter().any(|a| a.id == id && a.is_open()) {
+            return false;
+        }
+        self.raise_failure(
+            id,
+            None,
+            LineKey::Unsorted,
+            format!("Board change not saved ({kind}): {reason}"),
             self.now,
         );
         true

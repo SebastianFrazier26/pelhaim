@@ -328,6 +328,45 @@ fn string_tool_result_answers_question() {
     }));
 }
 
+fn answer_from(result: &str) -> String {
+    let mut p = ClaudeFileParser::new(
+        SessionKey::claude("Q"),
+        PathBuf::from("Q.jsonl"),
+        None,
+        fallback(),
+    );
+    let events = feed_all(
+        &mut p,
+        &[
+            r#"{"type":"assistant","timestamp":"2026-11-23T10:00:00Z","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"q","name":"AskUserQuestion","input":{"questions":[{"question":"Pick a colour?","header":"Colour","multiSelect":false,"options":[]},{"question":"Pick a size?","header":"Size","multiSelect":false,"options":[]}]}}]}}"#,
+            result,
+        ],
+    );
+    events
+        .into_iter()
+        .find_map(|e| match e {
+            Event::QuestionAnswered { answer, .. } => Some(answer),
+            _ => None,
+        })
+        .expect("answered")
+}
+
+// Synthetic records in the shape Claude Code writes: a harness sentence
+// around `"Q"="A"` pairs, plus a structured `toolUseResult.answers`.
+#[test]
+fn question_answer_prefers_structured_answers_in_question_order() {
+    let line = r#"{"type":"user","timestamp":"2026-11-23T10:00:05Z","message":{"content":[{"type":"tool_result","tool_use_id":"q","content":"Your questions have been answered: \"Pick a colour?\"=\"Teal\", \"Pick a size?\"=\"Large\". You can now continue with these answers in mind."}]},"toolUseResult":{"questions":[{"question":"Pick a colour?","header":"Colour","multiSelect":false,"options":[]},{"question":"Pick a size?","header":"Size","multiSelect":false,"options":[]}],"answers":{"Pick a size?":"Large","Pick a colour?":"Teal"},"annotations":{}}}"#;
+    assert_eq!(answer_from(line), "Teal, Large");
+}
+
+#[test]
+fn question_answer_falls_back_to_parsing_the_harness_sentence() {
+    let your = r#"{"type":"user","timestamp":"2026-11-23T10:00:05Z","message":{"content":[{"type":"tool_result","tool_use_id":"q","content":"Your questions have been answered: \"Pick a colour?\"=\"Teal\", \"Pick a size?\"=\"Large, please\". You can now continue with these answers in mind."}]}}"#;
+    assert_eq!(answer_from(your), "Teal, Large, please");
+    let user = r#"{"type":"user","timestamp":"2026-11-23T10:00:05Z","message":{"content":[{"type":"tool_result","tool_use_id":"q","content":[{"type":"text","text":"The user answered: \"Pick a colour?\"=\"Teal\". Read the answers carefully — they may request clarification, changes, or that you not proceed — and follow what they actually say."}]}]}}"#;
+    assert_eq!(answer_from(user), "Teal");
+}
+
 #[test]
 fn end_turn_only_on_stop_reason() {
     let events = s1();

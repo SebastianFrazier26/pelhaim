@@ -38,9 +38,9 @@ Look for:
 Check, ticking each:
 
 1. [ ] Every tagged Claude Code and Codex session or agent is on its project's line. Untagged ones are on UNSORTED, each with an Assign alert.
-2. [ ] The orchestrator session is on DISPATCH after you answer "This is the orchestrator" on its Assign popup (or list its id in `[dispatch].sessions`). Its subagents branch off onto their lines.
+2. [ ] The orchestrator session is on DISPATCH after you answer "This is the orchestrator" on its Assign popup (or list its id in `[dispatch].sessions`). Its tagged subagents branch off onto their lines; untagged ones land on UNSORTED with an Assign alert (DISPATCH is never inherited).
 3. [ ] Ask an `AskUserQuestion` in any session: the train turns yellow and a popup opens within 2 s.
-4. [ ] Answer it in the session's terminal: the popup closes by itself.
+4. [ ] Answer it in the session's terminal: within 2 s the popup flips to `STATUS: ANSWERED` and stays open to offer `[Log decision]`, until you close or dismiss it. A logged title carries only your answer, never the harness's "Your questions have been answered…" text.
 5. [ ] (Optional, writes the real log.) Click `[Log decision]` on an answered alert, then:
 
    ```sh

@@ -759,3 +759,104 @@ fn open_decision_counts_fill_line_views() {
     assert_eq!(count("ETHICA"), 0);
     assert_eq!(count("DISPATCH"), 0);
 }
+
+// §7.7: an untagged subagent inherits nothing from a DISPATCH parent, so both
+// ways of marking the orchestrator leave its untagged children on Unsorted.
+#[test]
+fn dispatch_parent_untagged_child_lands_on_unsorted_with_assign_alert() {
+    for listed in [false, true] {
+        let mut cfg = cfg(&["ethica"]);
+        if listed {
+            cfg.dispatch_sessions = vec!["U1".into()];
+        }
+        let mut e = Engine::new(cfg, RestoredState::default());
+        let p = key("U1");
+        let child = SessionKey::claude_sub("U1", "later");
+        untagged(&mut e, &p, t0());
+        if !listed {
+            let id = AlertId("assign:claude:U1".into());
+            let (out, _) = e.answer(local(&id, Choice::Options(vec![1])), t0() + secs(3));
+            assert_eq!(out, AnswerOutcome::Accepted);
+        }
+        assert_eq!(line_of(&e.snapshot(), &p), LineKey::Dispatch);
+
+        spawn(&mut e, &p, "toolu_c", "later", "no tag", t0() + secs(60));
+        discover_in(&mut e, &child, Some(&p), t0() + secs(61));
+        link(&mut e, &child, &p, "toolu_c");
+        let snap = e.snapshot();
+        assert_eq!(line_of(&snap, &child), LineKey::Unsorted, "listed={listed}");
+        assert_eq!(tag_of(&snap, &child), TagResolution::Untagged);
+        assert!(alert(&snap, &format!("assign:{}", child.0)).is_open());
+    }
+}
+
+#[test]
+fn long_terminal_answer_is_bounded_in_popup_and_decision_title() {
+    let mut e = engine(&["safeascent"]);
+    let k = key("S1");
+    discover_in(&mut e, &k, None, t0());
+    tag(&mut e, &k, "pelhaim-project: safeascent\nwork");
+    prompt(&mut e, &k, "work", t0());
+    let header = "H".repeat(200);
+    ask(
+        &mut e,
+        &k,
+        "toolu_q",
+        vec![question(&header, "Go?", &["Yes"])],
+        t0() + secs(5),
+    );
+    let long = format!("line one\nline two {}", "x".repeat(500));
+    answered(&mut e, &k, "toolu_q", &long, t0() + secs(30));
+    let id = AlertId(format!("q:{}:toolu_q", k.0));
+    let AlertState::Answered { answer, .. } = alert(&e.snapshot(), &id.0).state else {
+        panic!("not answered");
+    };
+    assert!(answer.starts_with("line one line two x"), "{answer}");
+    assert_eq!(answer.chars().count(), 120);
+    assert!(answer.ends_with('…'));
+
+    let at = t0() + secs(60);
+    cmd(
+        &mut e,
+        Command::LogDecision {
+            alert: id,
+            project: None,
+            at,
+        },
+    );
+    let title = &e.snapshot().decisions_recent[0].title;
+    assert!(title.chars().count() <= 160, "{}", title.chars().count());
+    assert!(!title.contains('\n'));
+}
+
+#[test]
+fn store_write_failure_raises_one_failure_alert_until_closed() {
+    let mut e = engine(&["safeascent"]);
+    let fail = |kind: &str| {
+        ev(Event::StoreWriteFailed {
+            kind: kind.into(),
+            reason: "database is locked".into(),
+        })
+    };
+    let fx = e.apply(fail("Assigned"));
+    let snap = e.snapshot();
+    let f = alert(&snap, "store-failure");
+    assert_eq!(
+        f.kind,
+        AlertKind::Failure {
+            reason: "Board change not saved (Assigned): database is locked".into()
+        }
+    );
+    assert!(fx.contains(&Effect::Alert(AlertEvent::Raised(f))));
+
+    let fx = e.apply(fail("Dismissed"));
+    assert!(!fx.iter().any(|f| matches!(f, Effect::Alert(_))));
+    let snap = e.snapshot();
+    assert_eq!(
+        snap.alerts
+            .iter()
+            .filter(|a| a.id.0 == "store-failure")
+            .count(),
+        1
+    );
+}
