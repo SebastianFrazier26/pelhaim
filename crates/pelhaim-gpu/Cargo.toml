@@ -11,3 +11,14 @@ workspace = true
 
 [features]
 gpu-goldens = []
+
+[dependencies]
+anyhow = "1.0.105"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+pelhaim-board = { path = "../pelhaim-board" }
+pollster = "1.0.3"
+wgpu = "30.0.2"
+
+[dev-dependencies]
+pelhaim-core = { path = "../pelhaim-core", features = ["testkit"] }
+png = "0.18.1"
