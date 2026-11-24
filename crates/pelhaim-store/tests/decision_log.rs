@@ -67,11 +67,11 @@ fn leftover_temp_files(dir: &Path) -> Vec<String> {
 fn entry_renders_exact_format() {
     assert_eq!(
         render_entry(&c1(), "\n"),
-        "- **2026-11-23: Stage C1: Proceed**\n  - Why: Proceed to C1?\n  - Who: owner. <!-- pelhaim:decision:7 -->\n\n"
+        "- **2026-11-23: Stage C1: Proceed**\n  - Why: Proceed to C1?\n  - Who: owner. <!-- pelhaim:decision:7:137c9edb -->\n\n"
     );
     assert_eq!(
         render_entry(&c1(), "\r\n"),
-        "- **2026-11-23: Stage C1: Proceed**\r\n  - Why: Proceed to C1?\r\n  - Who: owner. <!-- pelhaim:decision:7 -->\r\n\r\n"
+        "- **2026-11-23: Stage C1: Proceed**\r\n  - Why: Proceed to C1?\r\n  - Who: owner. <!-- pelhaim:decision:7:137c9edb -->\r\n\r\n"
     );
 }
 
@@ -81,7 +81,7 @@ fn entry_sanitizes_title_and_why() {
     d.who = Who::AgentDefaultUnconfirmed;
     assert_eq!(
         render_entry(&d, "\n"),
-        "- **2026-11-23: Two lines red**\n  - Why: why - not a bullet\n  - Who: agent default, not yet confirmed. <!-- pelhaim:decision:3 -->\n\n"
+        "- **2026-11-23: Two lines red**\n  - Why: why - not a bullet\n  - Who: agent default, not yet confirmed. <!-- pelhaim:decision:3:0da8363b -->\n\n"
     );
 }
 
@@ -330,8 +330,27 @@ fn crash_replay_does_not_duplicate_entry() {
     let other = decision(70, "Stage C2", "Next");
     write_decision(&path, &pelhaim(), &other).unwrap();
     let out = fs::read_to_string(&path).unwrap();
-    assert_eq!(out.matches("<!-- pelhaim:decision:7 -->").count(), 1);
-    assert_eq!(out.matches("<!-- pelhaim:decision:70 -->").count(), 1);
+    assert_eq!(
+        out.matches("<!-- pelhaim:decision:7:137c9edb -->").count(),
+        1
+    );
+    assert_eq!(
+        out.matches("<!-- pelhaim:decision:70:38e51e62 -->").count(),
+        1
+    );
+}
+
+#[test]
+fn recycled_id_with_different_content_is_still_written() {
+    let (_dir, path) = temp_log(BASE);
+    write_decision(&path, &pelhaim(), &c1()).unwrap();
+    // After a store reset ids restart, so an unrelated decision can reuse id 7.
+    let reused = decision(7, "Stage C2: Hold", "Hold at C1?");
+    write_decision(&path, &pelhaim(), &reused).unwrap();
+    let out = fs::read_to_string(&path).unwrap();
+    assert!(out.contains(&render_entry(&reused, "\n")));
+    assert!(out.contains(&render_entry(&c1(), "\n")));
+    assert_eq!(out.matches("<!-- pelhaim:decision:7:").count(), 2);
 }
 
 #[test]

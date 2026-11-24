@@ -36,7 +36,7 @@ agent research gaps).
 
 - **2026-11-23: Stage C1: Proceed**
   - Why: Proceed to C1?
-  - Who: owner. <!-- pelhaim:decision:7 -->
+  - Who: owner. <!-- pelhaim:decision:7:137c9edb -->
 
 - **2026-11-23: New project pelhaim.**
   - Who: owner.

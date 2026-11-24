@@ -3,7 +3,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use pelhaim_core::{Decision, DecisionId, sanitize_line};
+use pelhaim_core::{Decision, sanitize_line};
 use sha2::{Digest, Sha256};
 
 const OPEN_HEADING: &str = "### Open decisions (need you)";
@@ -59,8 +59,11 @@ fn io_err(what: &str, path: &Path, e: std::io::Error) -> DecisionLogError {
 
 /// Makes the export idempotent per decision: a crash between the rename and recording
 /// `DecisionExported` replays the export, which then finds this marker and skips.
-fn marker(id: DecisionId) -> String {
-    format!("<!-- pelhaim:decision:{} -->", id.0)
+/// The content hash keeps a recycled id (after a store reset) from matching an old entry.
+fn marker(d: &Decision) -> String {
+    let digest = Sha256::digest(format!("{}\n{}", d.date.format("%Y-%m-%d"), d.title));
+    let h8: String = digest[..4].iter().map(|b| format!("{b:02x}")).collect();
+    format!("<!-- pelhaim:decision:{}:{h8} -->", d.id.0)
 }
 
 pub fn render_entry(d: &Decision, eol: &str) -> String {
@@ -70,7 +73,7 @@ pub fn render_entry(d: &Decision, eol: &str) -> String {
         title = sanitize_line(&d.title),
         why = sanitize_line(&d.why),
         who = d.who.as_log_str(),
-        marker = marker(d.id),
+        marker = marker(d),
     )
 }
 
@@ -208,7 +211,7 @@ pub fn write_decision_with_hook(
         .into_owned();
     let tmp = dir.join(format!(".{file_name}.pelhaim-tmp-{}", std::process::id()));
     let bak = dir.join(format!("{file_name}.pelhaim-bak"));
-    let marker = marker(d.id);
+    let marker = marker(d);
 
     for _ in 0..2 {
         let before = fs::read(&target).map_err(|e| io_err("reading", &target, e))?;
