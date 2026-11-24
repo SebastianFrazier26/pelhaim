@@ -93,14 +93,29 @@ fn questions(input: &Value) -> Vec<Question> {
         .collect()
 }
 
+/// Harness-injected user records: subagent completions, `!` shell echoes and
+/// slash-command output. None of them is the owner starting a prompt.
+const NOT_PROMPT_PREFIXES: &[&str] = &[
+    "<task-notification>",
+    "<bash-input>",
+    "<bash-stdout>",
+    "<bash-stderr>",
+    "<local-command",
+    "<command-",
+];
+
 fn is_real_prompt(record: &Value, text: &str) -> bool {
     let flag = |k: &str| record.get(k).and_then(Value::as_bool) == Some(true);
+    let human_origin = record
+        .get("origin")
+        .and_then(|o| o.get("kind"))
+        .is_none_or(|k| k.as_str() == Some("human"));
     let head = text.trim_start();
     !flag("isMeta")
         && !flag("isCompactSummary")
+        && human_origin
         && !head.is_empty()
-        && !head.starts_with("<command-")
-        && !head.starts_with("<local-command-")
+        && !NOT_PROMPT_PREFIXES.iter().any(|p| head.starts_with(p))
 }
 
 impl ClaudeFileParser {

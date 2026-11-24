@@ -6,7 +6,10 @@ use pelhaim_adapters::observe::{
     CLAUDE_TESTED, ClaudeFile, ClaudeFileParser, discover_claude, is_untested, parse_meta,
 };
 use pelhaim_adapters::{TailRead, Tailer};
-use pelhaim_core::{Event, QOption, Question, SessionKey, TagParse, Tool, Ts};
+use pelhaim_core::{
+    Engine, EngineConfig, Event, Input, QOption, Question, RestoredState, SessionKey, TagParse,
+    Tool, TrainState, Ts,
+};
 
 fn fixture_home() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude")
@@ -703,6 +706,8 @@ fn discovery_finds_mains_then_subagents_within_window() {
             ("S1.jsonl", 300),
             ("S2.jsonl", 100),
             ("S3.jsonl", 3 * 86_400),
+            ("S4.jsonl", 3 * 86_400),
+            ("S4/subagents/agent-b1.jsonl", 3 * 86_400),
             ("S1/subagents/agent-a1.jsonl", 200),
             ("S1/subagents/agent-a2.jsonl", 250),
         ],
@@ -744,6 +749,8 @@ fn discovery_keeps_quiet_parent_of_active_subagent() {
             ("S1.jsonl", 5 * day),
             ("S2.jsonl", 5 * day),
             ("S3.jsonl", 5 * day),
+            ("S4.jsonl", 5 * day),
+            ("S4/subagents/agent-b1.jsonl", 5 * day),
             ("S1/subagents/agent-a1.jsonl", 10),
             ("S1/subagents/agent-a2.jsonl", 5 * day),
         ],
@@ -778,4 +785,112 @@ fn discovery_of_missing_home_is_empty() {
         )
         .is_empty()
     );
+}
+
+fn s4() -> Vec<Event> {
+    parse_file(
+        &project_dir().join("S4.jsonl"),
+        SessionKey::claude("S4"),
+        None,
+    )
+    .0
+}
+
+fn prompt_titles(events: &[Event]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::PromptStarted { title, .. } => Some(title.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn harness_injected_user_records_are_not_prompts() {
+    let events = s4();
+    assert_eq!(
+        prompt_titles(&events),
+        ["Ship the release", "Publish the notes"]
+    );
+    // d3..d10: task notifications (string and text-block), a peer message,
+    // bash input/stdout/stderr, local-command output and a slash command.
+    let injected = [
+        "2026-11-24T08:05:00Z",
+        "2026-11-24T08:05:01Z",
+        "2026-11-24T08:06:00Z",
+        "2026-11-24T08:07:00Z",
+        "2026-11-24T08:07:01Z",
+        "2026-11-24T08:07:02Z",
+        "2026-11-24T08:08:00Z",
+        "2026-11-24T08:08:01Z",
+    ];
+    for t in injected {
+        let at = ts(t);
+        let here: Vec<_> = events.iter().filter(|e| e.at() == Some(at)).collect();
+        assert_eq!(
+            here,
+            [&Event::Activity {
+                key: SessionKey::claude("S4"),
+                at,
+            }],
+            "record at {t} must count as activity only"
+        );
+    }
+}
+
+#[test]
+fn non_human_origin_is_not_a_prompt() {
+    for origin in [
+        r#"{"kind":"task-notification"}"#,
+        r#"{"kind":"peer","from":"x"}"#,
+        r#"{"kind":"auto-continuation"}"#,
+        r#"{"kind":7}"#,
+    ] {
+        let mut p = ClaudeFileParser::new(
+            SessionKey::claude("O"),
+            PathBuf::from("O.jsonl"),
+            None,
+            fallback(),
+        );
+        let line = format!(
+            r#"{{"type":"user","timestamp":"2026-11-24T08:00:00Z","origin":{origin},"message":{{"content":"plain words"}}}}"#
+        );
+        let events = p.feed(line.as_bytes());
+        assert_eq!(
+            kinds(&events),
+            ["SessionDiscovered", "Activity"],
+            "origin {origin}"
+        );
+    }
+}
+
+#[test]
+fn background_completion_adds_no_station_and_child_still_finishes() {
+    let parent = SessionKey::claude("S4");
+    let child = SessionKey::claude_sub("S4", "b1");
+    let sub_dir = project_dir().join("S4/subagents");
+    let (child_events, child_parser) = parse_file(
+        &sub_dir.join("agent-b1.jsonl"),
+        child.clone(),
+        Some(parent.clone()),
+    );
+    let meta = fs::read(sub_dir.join("agent-b1.meta.json")).unwrap();
+    let meta_events = parse_meta(&child, &parent, &meta, child_parser.last_at().unwrap());
+
+    let mut engine = Engine::new(EngineConfig::default(), RestoredState::default());
+    for e in s4().into_iter().chain(child_events).chain(meta_events) {
+        engine.apply(Input::Event(e));
+    }
+    assert_eq!(engine.dropped_events(), 0);
+    let snap = engine.snapshot();
+    let track = snap.tracks.values().find(|t| t.session == parent).unwrap();
+    let titles: Vec<_> = track
+        .stations
+        .iter()
+        .map(|id| snap.stations[id].title.clone())
+        .collect();
+    assert_eq!(titles, ["Ship the release", "Publish the notes"]);
+    let child_train = snap.trains.values().find(|t| t.session == child).unwrap();
+    assert_eq!(child_train.state, TrainState::Done);
 }
