@@ -1,5 +1,6 @@
 pub mod color;
 pub mod display;
+pub mod font;
 pub mod palette;
 pub mod view;
 
