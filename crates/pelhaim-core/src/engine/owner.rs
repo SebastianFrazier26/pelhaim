@@ -239,7 +239,14 @@ impl Engine {
             return Err(LogError::NotAnswered);
         };
         // Logging the same answer twice would duplicate the entry in the owner's log.
-        if a.decision.is_some() {
+        // Re-derived alerts lose `decision` across a restart, so restored decisions
+        // are checked by source alert as well.
+        if a.decision.is_some()
+            || self
+                .decisions
+                .iter()
+                .any(|d| d.source_alert.as_ref() == Some(alert_id))
+        {
             return Ok(());
         }
         let project = match project {

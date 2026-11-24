@@ -485,6 +485,49 @@ fn log_decision_title_why_who() {
 }
 
 #[test]
+fn log_decision_skips_alert_already_logged_before_restart() {
+    let k = key("S1");
+    let id = AlertId(format!("q:{}:toolu_q", k.0));
+    let restored = Decision {
+        id: DecisionId(1),
+        project: "safeascent".into(),
+        date: chrono::NaiveDate::from_ymd_opt(2026, 11, 23).unwrap(),
+        title: "Stage C1: Proceed".into(),
+        why: "Proceed to C1?".into(),
+        who: Who::Owner,
+        origin: Origin::Local,
+        source_alert: Some(id.clone()),
+        written_to_md: true,
+    };
+    let mut e = Engine::new(
+        cfg(&["safeascent"]),
+        RestoredState {
+            decisions: vec![restored.clone()],
+            ..RestoredState::default()
+        },
+    );
+    assert_eq!(observed_question(&mut e, &k, "safeascent", "Stage C1"), id);
+    assert_eq!(alert(&e.snapshot(), &id.0).decision, None);
+
+    let fx = cmd(
+        &mut e,
+        Command::LogDecision {
+            alert: id,
+            project: None,
+            at: t0() + secs(60),
+        },
+    );
+    assert!(
+        !fx.iter().any(|f| matches!(
+            f,
+            Effect::ExportDecision(_) | Effect::Persist(OwnerEvent::DecisionLogged(_), _)
+        )),
+        "{fx:?}"
+    );
+    assert_eq!(e.snapshot().decisions_recent, vec![restored]);
+}
+
+#[test]
 fn log_decision_ids_dates_and_empty_header() {
     let old = Decision {
         id: DecisionId(4),
