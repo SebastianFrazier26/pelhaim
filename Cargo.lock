@@ -585,6 +585,7 @@ dependencies = [
  "chrono",
  "clap",
  "pelhaim-core",
+ "rustix",
  "serde",
  "tempfile",
  "toml",

@@ -98,18 +98,26 @@ impl Holder {
                 c.arg("-w").arg(self.pid.to_string());
                 c
             }
-            // 2026-11-24: unverified on a real Linux host. Unlike caffeinate's `-w`,
-            // nothing ties this child's lifetime to pelhaim's pid, so a SIGKILLed
-            // pelhaim leaves it running.
+            // 2026-11-24: unverified on a real Linux host. There is no `-w`, so the inhibited
+            // command polls pelhaim's pid itself: POSIX `sh` + `kill -0` works on every
+            // distro, unlike GNU-only `tail --pid`. The 5 s poll bounds how long a
+            // SIGKILLed pelhaim keeps the machine awake. Its own process group lets
+            // Release take down the poll loop and its `sleep` along with systemd-inhibit.
+            // `keep_display` is not passed: `idle` already covers display blanking.
             Mechanism::SystemdInhibit(bin) => {
                 let mut c = Command::new(bin);
                 c.args([
                     "--what=sleep:idle",
                     "--who=pelhaim",
                     "--why=agents running",
-                    "sleep",
-                    "infinity",
-                ]);
+                    "sh",
+                    "-c",
+                    INHIBIT_WAIT_SCRIPT,
+                    "pelhaim-wait",
+                ])
+                .arg(self.pid.to_string());
+                #[cfg(unix)]
+                std::os::unix::process::CommandExt::process_group(&mut c, 0);
                 c
             }
         };
@@ -126,12 +134,45 @@ impl Holder {
         let Some(mut c) = self.child.take() else {
             return Ok(());
         };
-        if c.try_wait()?.is_none() {
-            c.kill()?;
-            c.wait()?;
+        match self.mechanism {
+            #[cfg(unix)]
+            Some(Mechanism::SystemdInhibit(_)) => kill_group(&mut c),
+            _ => {
+                if c.try_wait()?.is_none() {
+                    c.kill()?;
+                    c.wait()?;
+                }
+                Ok(())
+            }
         }
-        Ok(())
     }
+}
+
+const INHIBIT_WAIT_SCRIPT: &str = "while kill -0 \"$1\" 2>/dev/null; do sleep 5; done";
+
+/// Signals the group even when the leader already exited, since its descendants
+/// may outlive it. SIGKILL follows if the group ignores SIGTERM, so Drop never hangs.
+#[cfg(unix)]
+fn kill_group(c: &mut Child) -> std::io::Result<()> {
+    use rustix::process::{Pid, Signal, kill_process_group};
+    use std::time::{Duration, Instant};
+
+    let pgid = Pid::from_child(c);
+    let signal = |sig| match kill_process_group(pgid, sig) {
+        Err(rustix::io::Errno::SRCH) => Ok(()),
+        r => r.map_err(std::io::Error::from),
+    };
+    signal(Signal::TERM)?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while c.try_wait()?.is_none() {
+        if Instant::now() >= deadline {
+            signal(Signal::KILL)?;
+            c.wait()?;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
 }
 
 impl Drop for Holder {
@@ -175,6 +216,41 @@ mod tests {
             )
             .unwrap();
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        /// Like systemd-inhibit: skips its `--` options and runs the rest as a child, so
+        /// the real `sh -c` pid-poll loop runs as a grandchild in the holder's group.
+        pub fn install_inhibit(dir: &Path) {
+            let p = dir.join("systemd-inhibit");
+            std::fs::write(
+                &p,
+                "#!/bin/sh\nd=\"$(dirname \"$0\")\"\n\
+                 echo $$ > \"$d/pid.tmp\" && mv \"$d/pid.tmp\" \"$d/pid.txt\"\n\
+                 while [ \"${1#--}\" != \"$1\" ]; do shift; done\n\
+                 \"$@\" &\nwait $!\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        pub fn group(pgid: &str) -> Vec<String> {
+            let out = std::process::Command::new("pgrep")
+                .args(["-g", pgid.trim()])
+                .output()
+                .unwrap();
+            String::from_utf8(out.stdout)
+                .unwrap()
+                .lines()
+                .map(str::to_string)
+                .collect()
+        }
+
+        pub fn eventually(what: &str, mut ok: impl FnMut() -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !ok() {
+                assert!(Instant::now() < deadline, "timed out: {what}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
         }
 
         pub fn wait_for(p: PathBuf) -> String {
@@ -298,10 +374,59 @@ mod tests {
                 "--what=sleep:idle",
                 "--who=pelhaim",
                 "--why=agents running",
-                "sleep",
-                "infinity"
+                "sh",
+                "-c",
+                INHIBIT_WAIT_SCRIPT,
+                "pelhaim-wait",
+                "4242"
             ]
         );
+    }
+
+    #[cfg(unix)]
+    fn inhibit_holder(dir: &Path, pid: u32) -> (Holder, String) {
+        fake::install_inhibit(dir);
+        let m = detect(dir.as_os_str(), Os::Linux).unwrap();
+        let mut h = Holder::new(Some(m), pid, false);
+        h.apply(KeepAwakeAction::Hold).unwrap();
+        let pgid = fake::wait_for(dir.join("pid.txt")).trim().to_string();
+        (h, pgid)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inhibit_release_kills_whole_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut h, pgid) = inhibit_holder(dir.path(), std::process::id());
+        fake::eventually("grandchild started", || fake::group(&pgid).len() >= 2);
+        h.apply(KeepAwakeAction::Release).unwrap();
+        assert!(!h.is_held());
+        fake::eventually("group gone after Release", || fake::group(&pgid).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inhibit_drop_kills_whole_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let (h, pgid) = inhibit_holder(dir.path(), std::process::id());
+        fake::eventually("grandchild started", || fake::group(&pgid).len() >= 2);
+        drop(h);
+        fake::eventually("group gone after Drop", || fake::group(&pgid).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inhibit_ends_when_pelhaim_pid_is_gone() {
+        let mut gone = std::process::Command::new("true").spawn().unwrap();
+        let gone_pid = gone.id();
+        gone.wait().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (mut h, pgid) = inhibit_holder(dir.path(), gone_pid);
+        fake::eventually("inhibitor exits on its own", || {
+            h.child.as_mut().unwrap().try_wait().unwrap().is_some()
+        });
+        fake::eventually("group gone", || fake::group(&pgid).is_empty());
+        h.apply(KeepAwakeAction::Release).unwrap();
     }
 
     #[cfg(unix)]
