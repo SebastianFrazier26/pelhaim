@@ -88,6 +88,12 @@ impl Engine {
             self.dropped += 1;
             return false;
         };
+        // A second finish (a parent's task notification after meta `finished`)
+        // must not count as a write or re-berth the child.
+        if matches!(e, Event::SubagentFinished { .. }) && self.trains[&id].state == TrainState::Done
+        {
+            return false;
+        }
         let parent_before = self.trains[&id].parent;
         if let Some(at) = e.at() {
             self.touch(id, at);

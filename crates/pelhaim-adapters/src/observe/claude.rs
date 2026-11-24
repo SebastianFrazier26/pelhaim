@@ -34,6 +34,8 @@ pub struct ClaudeFileParser {
     open: HashMap<String, OpenCall>,
     questions: HashSet<String>,
     prompted: bool,
+    /// Agent ids of this session's background launches, until a task notification finishes them.
+    launched: HashSet<String>,
 }
 
 fn str_at<'a>(v: &'a Value, path: &[&str]) -> Option<&'a str> {
@@ -140,6 +142,7 @@ impl ClaudeFileParser {
             open: HashMap::new(),
             questions: HashSet::new(),
             prompted: false,
+            launched: HashSet::new(),
         }
     }
 
@@ -177,7 +180,8 @@ impl ClaudeFileParser {
         }
 
         let mut events = self.map(&record, at);
-        if ts.is_some() && !events.iter().any(|e| e.at().is_some()) {
+        let timed = |e: &Event| e.at().is_some() && e.session() == Some(&self.key);
+        if ts.is_some() && !events.iter().any(timed) {
             events.push(Event::Activity {
                 key: self.key.clone(),
                 at,
@@ -264,15 +268,18 @@ impl ClaudeFileParser {
             })
             .unwrap_or_default();
         if !results.is_empty() {
+            let record_agent = (results.len() == 1)
+                .then(|| str_at(record, &["toolUseResult", "agentId"]))
+                .flatten();
             return results
                 .into_iter()
-                .flat_map(|r| self.tool_result(r, at))
+                .flat_map(|r| self.tool_result(r, record_agent, at))
                 .collect();
         }
 
         let text = content_text(content);
         if !is_real_prompt(record, &text) {
-            return Vec::new();
+            return self.task_notification(&text, at).into_iter().collect();
         }
         let mut out = Vec::new();
         let first = !self.prompted;
@@ -293,7 +300,23 @@ impl ClaudeFileParser {
         out
     }
 
-    fn tool_result(&mut self, block: &Value, at: Ts) -> Vec<Event> {
+    /// Fallback finish for a background child (meta `finished` is primary); the
+    /// engine ignores it for a child already Done. Notifications for ids this
+    /// session never launched, such as background shell tasks, are dropped.
+    fn task_notification(&mut self, text: &str, at: Ts) -> Option<Event> {
+        let body = text.trim_start().strip_prefix("<task-notification>")?;
+        let (_, rest) = body.split_once("<task-id>")?;
+        let (id, _) = rest.split_once("</task-id>")?;
+        if !self.launched.remove(id.trim()) {
+            return None;
+        }
+        Some(Event::SubagentFinished {
+            key: SessionKey::claude_sub(self.key.session_id(), id.trim()),
+            at,
+        })
+    }
+
+    fn tool_result(&mut self, block: &Value, record_agent: Option<&str>, at: Ts) -> Vec<Event> {
         let Some(id) = block.get("tool_use_id").and_then(Value::as_str) else {
             return Vec::new();
         };
@@ -312,6 +335,21 @@ impl ClaudeFileParser {
                 && (call.background
                     || first_text(content).is_some_and(|t| t.starts_with(LAUNCH_ACK)))
         });
+        if launched_only {
+            let from_text = || {
+                content_text(content)
+                    .lines()
+                    .find_map(|l| l.trim().strip_prefix("agentId:"))
+                    // On disk the id is followed by usage prose on the same line.
+                    .and_then(|rest| rest.split_whitespace().next())
+                    .map(str::to_string)
+            };
+            if let Some(agent) = record_agent.map(str::to_string).or_else(from_text)
+                && !agent.is_empty()
+            {
+                self.launched.insert(agent);
+            }
+        }
         out.push(Event::ToolClosed {
             key: self.key.clone(),
             call_id: id.to_string(),

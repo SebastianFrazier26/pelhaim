@@ -827,7 +827,11 @@ fn harness_injected_user_records_are_not_prompts() {
     ];
     for t in injected {
         let at = ts(t);
-        let here: Vec<_> = events.iter().filter(|e| e.at() == Some(at)).collect();
+        let parent = SessionKey::claude("S4");
+        let here: Vec<_> = events
+            .iter()
+            .filter(|e| e.at() == Some(at) && e.session() == Some(&parent))
+            .collect();
         assert_eq!(
             here,
             [&Event::Activity {
@@ -865,32 +869,211 @@ fn non_human_origin_is_not_a_prompt() {
     }
 }
 
-#[test]
-fn background_completion_adds_no_station_and_child_still_finishes() {
-    let parent = SessionKey::claude("S4");
-    let child = SessionKey::claude_sub("S4", "b1");
-    let sub_dir = project_dir().join("S4/subagents");
-    let (child_events, child_parser) = parse_file(
-        &sub_dir.join("agent-b1.jsonl"),
-        child.clone(),
-        Some(parent.clone()),
-    );
-    let meta = fs::read(sub_dir.join("agent-b1.meta.json")).unwrap();
-    let meta_events = parse_meta(&child, &parent, &meta, child_parser.last_at().unwrap());
+struct S4Run {
+    engine: Engine,
+    parser: ClaudeFileParser,
+    lines: std::vec::IntoIter<String>,
+    parent: SessionKey,
+    child: SessionKey,
+    child_last_at: Ts,
+}
 
-    let mut engine = Engine::new(EngineConfig::default(), RestoredState::default());
-    for e in s4().into_iter().chain(child_events).chain(meta_events) {
-        engine.apply(Input::Event(e));
+impl S4Run {
+    /// Parent up to its first task notification, the whole child transcript,
+    /// and the child's meta as it reads while the child still runs.
+    fn start() -> S4Run {
+        let parent = SessionKey::claude("S4");
+        let child = SessionKey::claude_sub("S4", "b1");
+        let path = project_dir().join("S4.jsonl");
+        let mut parser = ClaudeFileParser::new(parent.clone(), path.clone(), None, fallback());
+        let mut lines: Vec<String> = fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        let mut engine = Engine::new(EngineConfig::default(), RestoredState::default());
+        while let Some(line) = lines.pop() {
+            if line.contains("<task-notification>") {
+                lines.push(line);
+                break;
+            }
+            for e in parser.feed(line.as_bytes()) {
+                engine.apply(Input::Event(e));
+            }
+        }
+        lines.reverse();
+        let (child_events, child_parser) = parse_file(
+            &project_dir().join("S4/subagents/agent-b1.jsonl"),
+            child.clone(),
+            Some(parent.clone()),
+        );
+        let child_last_at = child_parser.last_at().unwrap();
+        let mut run = S4Run {
+            engine,
+            parser,
+            lines: lines.into_iter(),
+            parent,
+            child,
+            child_last_at,
+        };
+        run.apply(child_events);
+        let running = String::from_utf8(run.meta())
+            .unwrap()
+            .replace(r#""finished":true"#, r#""finished":false"#);
+        let linked = parse_meta(&run.child, &run.parent, running.as_bytes(), child_last_at);
+        run.apply(linked);
+        run
     }
-    assert_eq!(engine.dropped_events(), 0);
-    let snap = engine.snapshot();
-    let track = snap.tracks.values().find(|t| t.session == parent).unwrap();
+
+    fn meta(&self) -> Vec<u8> {
+        fs::read(project_dir().join("S4/subagents/agent-b1.meta.json")).unwrap()
+    }
+
+    fn apply(&mut self, events: Vec<Event>) {
+        for e in events {
+            self.engine.apply(Input::Event(e));
+        }
+    }
+
+    fn finish_meta(&mut self) {
+        let events = parse_meta(&self.child, &self.parent, &self.meta(), self.child_last_at);
+        assert!(events.contains(&Event::SubagentFinished {
+            key: self.child.clone(),
+            at: self.child_last_at,
+        }));
+        self.apply(events);
+    }
+
+    /// Feeds the next parent line and returns what the parser emitted.
+    fn next_parent_line(&mut self) -> Vec<Event> {
+        let line = self.lines.next().unwrap();
+        let events = self.parser.feed(line.as_bytes());
+        self.apply(events.clone());
+        events
+    }
+
+    fn state(&self, key: &SessionKey) -> TrainState {
+        self.train(key).state
+    }
+
+    fn train(&self, key: &SessionKey) -> pelhaim_core::Train {
+        let snap = self.engine.snapshot();
+        snap.trains
+            .values()
+            .find(|t| t.session == *key)
+            .unwrap()
+            .clone()
+    }
+}
+
+#[test]
+fn meta_finished_is_the_done_signal_for_a_background_child() {
+    let mut run = S4Run::start();
+    // Review Focus 1: the parent's own turn ended, but its child still runs.
+    assert_ne!(run.state(&run.child), TrainState::Done);
+    assert_eq!(run.state(&run.parent), TrainState::Working);
+
+    run.finish_meta();
+    assert_eq!(run.state(&run.child), TrainState::Done);
+    assert_eq!(run.state(&run.parent), TrainState::Idle);
+    assert_eq!(run.engine.dropped_events(), 0);
+}
+
+#[test]
+fn notification_after_meta_finished_does_not_double_finish() {
+    let mut run = S4Run::start();
+    run.finish_meta();
+    let child_before = run.train(&run.child);
+    let emitted = run.next_parent_line();
+    assert!(
+        emitted.contains(&Event::SubagentFinished {
+            key: run.child.clone(),
+            at: ts("2026-11-24T08:05:00Z"),
+        }),
+        "the parser cannot see meta, so it still emits the fallback"
+    );
+    assert_eq!(run.train(&run.child), child_before);
+    assert_eq!(run.state(&run.parent), TrainState::Idle);
+}
+
+#[test]
+fn task_notification_finishes_child_when_meta_never_does() {
+    let mut run = S4Run::start();
+    assert_eq!(run.state(&run.parent), TrainState::Working);
+    run.next_parent_line();
+    assert_eq!(run.state(&run.child), TrainState::Done);
+    assert_eq!(run.state(&run.parent), TrainState::Idle);
+    // d4 names b1 again: the parser emits the fallback only once.
+    let again = run.next_parent_line();
+    assert!(
+        !again
+            .iter()
+            .any(|e| matches!(e, Event::SubagentFinished { .. }))
+    );
+}
+
+#[test]
+fn background_completion_adds_no_station() {
+    let mut run = S4Run::start();
+    run.finish_meta();
+    while run.lines.len() > 0 {
+        run.next_parent_line();
+    }
+    assert_eq!(run.engine.dropped_events(), 0);
+    let snap = run.engine.snapshot();
+    let track = snap
+        .tracks
+        .values()
+        .find(|t| t.session == run.parent)
+        .unwrap();
     let titles: Vec<_> = track
         .stations
         .iter()
         .map(|id| snap.stations[id].title.clone())
         .collect();
     assert_eq!(titles, ["Ship the release", "Publish the notes"]);
-    let child_train = snap.trains.values().find(|t| t.session == child).unwrap();
-    assert_eq!(child_train.state, TrainState::Done);
+
+    let finishes: Vec<_> = s4()
+        .into_iter()
+        .filter(|e| matches!(e, Event::SubagentFinished { .. }))
+        .collect();
+    assert_eq!(
+        finishes,
+        [Event::SubagentFinished {
+            key: SessionKey::claude_sub("S4", "b1"),
+            at: ts("2026-11-24T08:05:00Z"),
+        }]
+    );
+}
+
+#[test]
+fn notification_for_unknown_task_id_is_ignored() {
+    let key = SessionKey::claude("U");
+    let mut p = ClaudeFileParser::new(key.clone(), PathBuf::from("U.jsonl"), None, fallback());
+    let notify = |id: &str, t: &str| {
+        format!(
+            r#"{{"type":"user","timestamp":"{t}","origin":{{"kind":"task-notification"}},"message":{{"content":"<task-notification>\n<task-id>{id}</task-id>\n<status>completed</status>\n</task-notification>"}}}}"#
+        )
+    };
+    let shell = p.feed(notify("bshell1", "2026-11-24T08:00:00Z").as_bytes());
+    assert_eq!(kinds(&shell), ["SessionDiscovered", "Activity"]);
+
+    // A launch whose agent id is only in the ack text (no toolUseResult).
+    feed_all(
+        &mut p,
+        &[
+            r#"{"type":"assistant","timestamp":"2026-11-24T08:00:01Z","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"t9","name":"Agent","input":{"description":"d","prompt":"p"}}]}}"#,
+            r#"{"type":"user","timestamp":"2026-11-24T08:00:02Z","message":{"content":[{"type":"tool_result","tool_use_id":"t9","content":[{"type":"text","text":"Async agent launched successfully.\nagentId: a9 (use it to continue)"}]}]}}"#,
+        ],
+    );
+    let other = p.feed(notify("zz", "2026-11-24T08:00:03Z").as_bytes());
+    assert_eq!(kinds(&other), ["Activity"]);
+    let known = p.feed(notify("a9", "2026-11-24T08:00:04Z").as_bytes());
+    assert!(known.contains(&Event::SubagentFinished {
+        key: SessionKey::claude_sub("U", "a9"),
+        at: ts("2026-11-24T08:00:04Z"),
+    }));
 }
