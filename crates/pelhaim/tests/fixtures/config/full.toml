@@ -1,0 +1,73 @@
+mode = ["observe"]
+
+[observe]
+claude_home = "~/.claude"
+codex_home = "~/.codex"
+active_window = "24h"
+stall_after = "15m"
+permission_after = "off"
+result_alerts = true
+
+[[project]]
+slug = "safeascent"
+name = "SafeAscent"
+path = "~/Developer/safeascent"
+repo = "SebastianFrazier26/safeascent"
+order = 1
+log_section = "SafeAscent"
+
+[[project]]
+slug = "cabn"
+name = "cabn"
+path = "~/Developer/cabn"
+order = 2
+log_section = "cabn + Portfolio"
+
+[[project]]
+slug = "ethica"
+name = "ethica"
+path = "~/Developer/ethica"
+order = 3
+
+[[project]]
+slug = "loosy-goose"
+name = "loosy-goose"
+path = "~/Developer/loosy-goose"
+order = 4
+
+[[project]]
+slug = "mlb-fansent"
+name = "MLB fansent"
+path = "~/Developer/mlb-fan-sentiment"
+order = 5
+
+[[project]]
+slug = "stringcan"
+name = "stringcan"
+order = 6
+
+[[project]]
+slug = "pelhaim"
+name = "pelhaim"
+path = "~/Developer/pelhaim"
+order = 7
+
+[dispatch]
+sessions = ["11111111-2222-3333-4444-555555555555"]
+
+[keep_awake]
+enabled = false
+include_observed = false
+keep_display_awake = true
+
+[remote]
+enabled = true
+
+[decision_log]
+path = "~/Developer/DECISION-LOG.md"
+write = "off"
+
+[board]
+palette = "high_contrast"
+motion = "reduced"
+float_alert_lines = false
