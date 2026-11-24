@@ -9,12 +9,16 @@ pub mod tag;
 pub mod testkit;
 pub mod text;
 
-pub use engine::{Command, Effect, Engine, EngineConfig, Input, ProjectCfg, RestoredState};
+pub use engine::{
+    AlertEvent, Answer, AnswerOutcome, Choice, Command, Effect, Engine, EngineConfig, Input,
+    KeepAwakeAction, LogError, OwnerEvent, ProjectCfg, RestoredState,
+};
 pub use event::{Event, QOption, Question, Tool, Ts};
 pub use ids::{AlertId, DecisionId, ForkId, SessionKey, StationId, TrackId, TrainId};
 pub use model::{
-    Alert, AssignTarget, Counters, Decision, Fork, KeepAwakeStatus, LEG_BLOCKS, LineKey, Position,
-    RuntimeRef, Station, StationStatus, TagResolution, Track, Train, TrainState,
+    Alert, AlertKind, AlertState, AnsweredBy, AssignOption, AssignTarget, Counters, Decision, Fork,
+    KeepAwakeStatus, LEG_BLOCKS, LineKey, Origin, Position, RuntimeRef, Station, StationStatus,
+    TagResolution, Track, Train, TrainState, Who,
 };
 pub use number::{format_train_number, train_number};
 pub use snapshot::{LineView, Snapshot};

@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::event::Ts;
-use crate::ids::{AlertId, ForkId, SessionKey, StationId, TrackId, TrainId};
+use crate::event::{Question, Ts};
+use crate::ids::{AlertId, DecisionId, ForkId, SessionKey, StationId, TrackId, TrainId};
 
 pub const LEG_BLOCKS: u16 = 10;
 
@@ -118,22 +118,139 @@ pub struct Fork {
     pub child_track: TrackId,
 }
 
-// Stubs: Task 4 replaces Alert, Decision and KeepAwakeStatus with the full types.
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
+pub enum Origin {
+    Local,
+    Remote { device_id: String },
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
+pub enum AnsweredBy {
+    Local,
+    Remote { device_id: String },
+    Terminal,
+}
+
+impl From<Origin> for AnsweredBy {
+    fn from(o: Origin) -> Self {
+        match o {
+            Origin::Local => AnsweredBy::Local,
+            Origin::Remote { device_id } => AnsweredBy::Remote { device_id },
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
+pub struct AssignOption {
+    pub label: String,
+    pub target: AssignTarget,
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
+pub enum AlertKind {
+    Question {
+        questions: Vec<Question>,
+    },
+    Result {
+        summary: String,
+    },
+    Stalled,
+    AssignProject {
+        session: SessionKey,
+        options: Vec<AssignOption>,
+        prefill: Option<usize>,
+    },
+    Failure {
+        reason: String,
+    },
+}
+
+impl AlertKind {
+    pub fn tab(&self) -> &'static str {
+        match self {
+            AlertKind::Question { .. } => "Question",
+            AlertKind::Result { .. } => "Result",
+            AlertKind::Stalled => "Stalled",
+            AlertKind::AssignProject { .. } => "Assign",
+            AlertKind::Failure { .. } => "Failure",
+        }
+    }
+
+    pub fn remote_answerable(&self) -> bool {
+        matches!(
+            self,
+            AlertKind::Question { .. } | AlertKind::AssignProject { .. }
+        )
+    }
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
+pub enum AlertState {
+    Open,
+    Tray,
+    Answered {
+        answer: String,
+        by: AnsweredBy,
+        at: Ts,
+    },
+    Expired,
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
 pub struct Alert {
     pub id: AlertId,
     pub train: Option<TrainId>,
     pub line: LineKey,
+    pub kind: AlertKind,
+    pub created: Ts,
+    pub state: AlertState,
+    pub answerable: bool,
+    pub decision: Option<DecisionId>,
 }
 
 impl Alert {
+    /// Still waiting on the owner: shown as a popup or parked in the tray.
     pub fn is_open(&self) -> bool {
-        true
+        matches!(self.state, AlertState::Open | AlertState::Tray)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
+pub enum Who {
+    Owner,
+    AgentDefaultOwnerConfirmed,
+    AgentDefaultUnconfirmed,
+}
+
+impl Who {
+    pub fn as_log_str(&self) -> &'static str {
+        match self {
+            Who::Owner => "owner",
+            Who::AgentDefaultOwnerConfirmed => "agent default, owner-confirmed",
+            Who::AgentDefaultUnconfirmed => "agent default, not yet confirmed",
+        }
     }
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
-pub struct Decision {}
+pub struct Decision {
+    pub id: DecisionId,
+    pub project: String,
+    pub date: chrono::NaiveDate,
+    pub title: String,
+    pub why: String,
+    pub who: Who,
+    pub origin: Origin,
+    pub source_alert: Option<AlertId>,
+    pub written_to_md: bool,
+}
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug, Default)]
-pub struct KeepAwakeStatus {}
+pub struct KeepAwakeStatus {
+    pub enabled: bool,
+    pub held: bool,
+    pub count: u32,
+    pub paused_until: Option<Ts>,
+    pub mechanism: Option<String>,
+    pub on_battery: Option<bool>,
+}

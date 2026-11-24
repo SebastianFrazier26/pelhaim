@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use super::Engine;
+use super::alerts::child_active;
 use crate::event::{Event, Tool, Ts};
 use crate::ids::{SessionKey, TrainId};
 use crate::model::{
@@ -61,16 +62,25 @@ impl Engine {
                 started,
             });
         }
-        if matches!(
-            e,
-            Event::CatchUpDone { .. }
-                | Event::DecisionExported { .. }
-                | Event::DecisionExportFailed { .. }
-                | Event::OpenDecisionCounts { .. }
-                | Event::KeepAwakeEnv { .. }
-        ) {
-            return false;
-        }
+        let e = match e {
+            Event::CatchUpDone { .. } => return false,
+            Event::DecisionExported { id, at } => return self.decision_exported(id, at),
+            Event::DecisionExportFailed { id, reason } => {
+                return self.decision_export_failed(id, reason);
+            }
+            Event::OpenDecisionCounts { counts } => {
+                self.open_counts = counts;
+                return true;
+            }
+            Event::KeepAwakeEnv {
+                mechanism,
+                on_battery,
+            } => {
+                self.keep.set_env(mechanism, on_battery);
+                return true;
+            }
+            e => e,
+        };
         let Some(key) = e.session().cloned() else {
             return false;
         };
@@ -78,10 +88,15 @@ impl Engine {
             self.dropped += 1;
             return false;
         };
+        let parent_before = self.trains[&id].parent;
         if let Some(at) = e.at() {
             self.touch(id, at);
+            // F18: a write clears Stalled first; the event's own rule then sets the state.
+            self.recover(id);
+            if let Some(p) = parent_before {
+                self.recover(p);
+            }
         }
-        let parent_before = self.trains[&id].parent;
         match e {
             Event::FormatUntested { .. } => self.train_mut(id).version_untested = true,
             Event::TitleChanged { title, .. } => {
@@ -125,6 +140,7 @@ impl Engine {
                 }
                 if let Some(&pid) = self.by_key.get(&parent) {
                     self.train_mut(id).parent.get_or_insert(pid);
+                    self.resolve(&key);
                 }
                 if let Some(call) = tool_use_id
                     && self.links.get(&call) != Some(&key)
@@ -163,7 +179,19 @@ impl Engine {
                     }
                 }
             }
-            Event::TurnEnded { .. } => {
+            Event::QuestionAsked {
+                call_id,
+                questions,
+                at,
+                ..
+            } => self.question_asked(id, &key, &call_id, questions, at),
+            Event::QuestionAnswered {
+                call_id,
+                answer,
+                at,
+                ..
+            } => self.question_answered(id, &key, &call_id, answer, at),
+            Event::TurnEnded { final_text, at, .. } => {
                 let subagent = self.meta[&key].subagent;
                 self.berth(id);
                 let t = self.train_mut(id);
@@ -175,6 +203,9 @@ impl Engine {
                 t.counters.turns += 1;
                 if !subagent {
                     self.settle_after_turn(id);
+                }
+                if let Some(text) = final_text {
+                    self.raise_result(id, &key, &text, at);
                 }
             }
             Event::WorkStarted { .. } => self.set_working(id),
@@ -199,24 +230,29 @@ impl Engine {
     }
 
     /// A main session whose own turn has ended stays Working while any of its
-    /// subagents is not Done: background subagents keep running after the
+    /// subagents is active: background subagents keep running after the
     /// parent's Agent call returns its launch acknowledgement (Review Focus 1).
-    fn settle_after_turn(&mut self, id: TrainId) {
+    /// Returns whether the state changed.
+    pub(super) fn settle_after_turn(&mut self, id: TrainId) -> bool {
         let Some(t) = self.trains.get(&id) else {
-            return;
+            return false;
         };
         if !t.position.berthed || !matches!(t.state, TrainState::Idle | TrainState::Working) {
-            return;
+            return false;
         }
         let busy = self
             .trains
             .values()
-            .any(|c| c.parent == Some(id) && c.state != TrainState::Done);
-        self.train_mut(id).state = if busy {
+            .any(|c| c.parent == Some(id) && child_active(&c.state));
+        let next = if busy {
             TrainState::Working
         } else {
             TrainState::Idle
         };
+        let t = self.train_mut(id);
+        let changed = t.state != next;
+        t.state = next;
+        changed
     }
 
     fn discover(&mut self, d: Discovered) -> bool {
@@ -466,24 +502,28 @@ impl Engine {
         }
     }
 
-    fn resolve(&mut self, key: &SessionKey) {
+    pub(super) fn resolve(&mut self, key: &SessionKey) {
         let (tag, line) = self.resolution(key);
         let id = self.by_key[key];
         let t = self.train_mut(id);
         t.tag = tag;
         let track = t.track;
         self.tracks.get_mut(&track).expect("track").line = line;
+        self.sync_assign_alert(key);
     }
 
     fn resolution(&self, key: &SessionKey) -> (TagResolution, LineKey) {
         let configured = |slug: &str| self.cfg.projects.iter().any(|p| p.slug == slug);
-        if let Some((target, _)) = self.assignments.get(key) {
+        let assigned = |target: &AssignTarget| {
             let line = match target {
                 AssignTarget::Dispatch => LineKey::Dispatch,
                 AssignTarget::Project(s) if configured(s) => LineKey::Project(s.clone()),
                 AssignTarget::Project(_) => LineKey::Unsorted,
             };
-            return (TagResolution::Assigned(target.clone()), line);
+            (TagResolution::Assigned(target.clone()), line)
+        };
+        if let Some((target, _)) = self.assignments.get(key) {
+            return assigned(target);
         }
         let meta = &self.meta[key];
         let tagged = |t: &Option<TagParse>| match t {
@@ -502,6 +542,11 @@ impl Engine {
                 .dispatch_sessions
                 .iter()
                 .any(|s| s == key.session_id());
+        if tag == TagResolution::Untagged
+            && let Some(target) = self.parent_assignment_for(key)
+        {
+            return assigned(target);
+        }
         let line = match &tag {
             _ if listed => LineKey::Dispatch,
             TagResolution::Tagged(s) if s == DISPATCH_SLUG => LineKey::Dispatch,
@@ -509,6 +554,15 @@ impl Engine {
             _ => LineKey::Unsorted,
         };
         (tag, line)
+    }
+
+    /// An owner assignment covers the session's untagged subagents that
+    /// started at or after it.
+    fn parent_assignment_for(&self, key: &SessionKey) -> Option<&AssignTarget> {
+        let child = &self.trains[&self.by_key[key]];
+        let parent = self.trains.get(&child.parent?)?;
+        let (target, at) = self.assignments.get(&parent.session)?;
+        (child.counters.started >= *at).then_some(target)
     }
 
     fn clear_forks_of(&mut self, track: crate::ids::TrackId) {
@@ -535,7 +589,7 @@ impl Engine {
         self.open_calls.remove(key);
         self.spawn_requests.retain(|_, p| &p.parent != key);
         self.links.retain(|_, c| c != key);
-        self.alerts.retain(|a| a.train != Some(id));
+        self.expire_alerts_of(id);
         let t = self.train_mut(id);
         t.position = Position::default();
         t.state = TrainState::Idle;
@@ -566,10 +620,10 @@ impl Engine {
         self.open_calls.remove(key);
         self.spawn_requests.retain(|_, p| &p.parent != key);
         self.links.retain(|_, c| c != key);
-        self.alerts.retain(|a| a.train != Some(id));
+        self.expire_alerts_of(id);
     }
 
-    fn train_mut(&mut self, id: TrainId) -> &mut Train {
+    pub(super) fn train_mut(&mut self, id: TrainId) -> &mut Train {
         self.trains.get_mut(&id).expect("train")
     }
 
