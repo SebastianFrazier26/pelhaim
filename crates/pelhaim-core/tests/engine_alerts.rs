@@ -328,15 +328,80 @@ fn untagged_raises_assign_with_orchestrator_option_last() {
 fn tagged_session_has_no_assign_alert() {
     let mut e = engine(&["safeascent"]);
     let k = key("S1");
-    discover_in(&mut e, &k, None, t0());
-    // Discovery alone resolves Untagged; the tag arriving retires the alert.
-    assert_eq!(e.snapshot().alerts.len(), 1);
-    let fx = tag(&mut e, &k, "pelhaim-project: safeascent\nhi");
+    let mut fx = e.apply(ev(Event::SessionDiscovered {
+        key: k.clone(),
+        tool: pelhaim_core::Tool::Claude,
+        parent: None,
+        path: "/fixtures/S1.jsonl".into(),
+        cwd: None,
+        version: None,
+        started: t0(),
+    }));
     assert!(e.snapshot().alerts.is_empty());
-    assert!(matches!(
-        alert_effects(&fx).as_slice(),
-        [AlertEvent::Updated(a)] if a.state == AlertState::Expired
-    ));
+    fx.extend(tag(&mut e, &k, "pelhaim-project: safeascent\nhi"));
+    fx.extend(prompt(&mut e, &k, "hi", t0()));
+    assert!(e.snapshot().alerts.is_empty());
+    assert!(alert_effects(&fx).is_empty());
+}
+
+#[test]
+fn untagged_session_gets_assign_only_once_tag_state_is_seen() {
+    let mut e = engine(&["safeascent"]);
+    let k = key("U1");
+    discover_in(&mut e, &k, None, t0());
+    let fx = prompt(&mut e, &k, "hi", t0());
+    assert!(e.snapshot().alerts.is_empty());
+    assert!(alert_effects(&fx).is_empty());
+
+    let fx = tag(&mut e, &k, "no tag here");
+    let snap = e.snapshot();
+    assert_eq!(snap.alerts.len(), 1);
+    assert_eq!(snap.alerts[0].id, AlertId("assign:claude:U1".into()));
+    assert_eq!(
+        alert_effects(&fx),
+        vec![AlertEvent::Raised(snap.alerts[0].clone())]
+    );
+}
+
+#[test]
+fn subagent_gets_no_assign_alert_until_linked() {
+    let mut e = engine(&["ethica"]);
+    let p = key("P1");
+    let (untagged_child, tagged_child) = (
+        SessionKey::claude_sub("P1", "a1"),
+        SessionKey::claude_sub("P1", "a2"),
+    );
+    tagged_session(&mut e, &p, "ethica", t0());
+    let assign_ids = |e: &Engine| {
+        e.snapshot()
+            .alerts
+            .iter()
+            .filter(|a| a.kind.tab() == "Assign")
+            .map(|a| a.id.0.clone())
+            .collect::<Vec<_>>()
+    };
+
+    // Discovered before the link, and even with its own first message seen.
+    for c in [&untagged_child, &tagged_child] {
+        discover_in(&mut e, c, Some(&p), t0() + secs(1));
+        tag(&mut e, c, "do the work");
+    }
+    assert!(assign_ids(&e).is_empty());
+
+    spawn(
+        &mut e,
+        &p,
+        "toolu_t",
+        "tagged",
+        "pelhaim-project: ethica",
+        t0() + secs(2),
+    );
+    link(&mut e, &tagged_child, &p, "toolu_t");
+    assert!(assign_ids(&e).is_empty());
+
+    spawn(&mut e, &p, "toolu_u", "untagged", "", t0() + secs(4));
+    link(&mut e, &untagged_child, &p, "toolu_u");
+    assert_eq!(assign_ids(&e), ["assign:claude:P1/a1"]);
 }
 
 #[test]

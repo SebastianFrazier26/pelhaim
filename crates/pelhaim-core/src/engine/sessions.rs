@@ -556,6 +556,17 @@ impl Engine {
         (tag, line)
     }
 
+    /// A subagent's tag is known once its spawn is linked; a main session's
+    /// once its first user message is read.
+    pub(super) fn tag_state_known(&self, key: &SessionKey) -> bool {
+        let meta = &self.meta[key];
+        if meta.subagent {
+            meta.spawn_tag.is_some()
+        } else {
+            meta.self_tag.is_some()
+        }
+    }
+
     /// An owner assignment covers the session's untagged subagents that
     /// started at or after it.
     fn parent_assignment_for(&self, key: &SessionKey) -> Option<&AssignTarget> {

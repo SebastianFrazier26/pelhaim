@@ -146,12 +146,13 @@ impl Engine {
 
     /// Keeps `assign:<key>` in step with the session's resolution: present
     /// while it sits on Unsorted untagged or mis-tagged, expired otherwise.
-    /// An answered one is left alone.
+    /// An answered one is left alone. Until the tag has been seen the session
+    /// only looks untagged, so it gets no alert yet.
     pub(super) fn sync_assign_alert(&mut self, key: &SessionKey) {
         let id = self.by_key[key];
         let t = &self.trains[&id];
         let aid = AlertId(format!("assign:{}", key.0));
-        let unsorted = self.tracks[&t.track].line == LineKey::Unsorted;
+        let unsorted = self.tracks[&t.track].line == LineKey::Unsorted && self.tag_state_known(key);
         let raw = match &t.tag {
             TagResolution::Untagged if unsorted => Some(None),
             TagResolution::MisTagged(raw) if unsorted => Some(Some(raw.clone())),
