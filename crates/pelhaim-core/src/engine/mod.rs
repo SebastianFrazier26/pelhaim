@@ -306,6 +306,11 @@ impl Engine {
         (outcome, std::mem::take(&mut self.effects))
     }
 
+    /// `snapshot().version` without building the snapshot.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
     /// Events for sessions the engine has not discovered are dropped; this counts them.
     pub fn dropped_events(&self) -> u64 {
         self.dropped
