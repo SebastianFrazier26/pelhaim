@@ -543,6 +543,8 @@ name = "pelhaim-adapters"
 version = "0.1.0"
 dependencies = [
  "notify",
+ "pelhaim-core",
+ "serde_json",
  "tempfile",
  "tokio",
 ]

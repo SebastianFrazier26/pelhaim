@@ -1,3 +1,4 @@
+pub mod observe;
 mod tail;
 mod watch;
 

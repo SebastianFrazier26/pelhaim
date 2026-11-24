@@ -1,0 +1,5 @@
+{"type":"user","uuid":"x1","parentUuid":null,"sessionId":"S3","timestamp":"2026-11-23T10:00:00.000Z","cwd":"/Users/owner","version":"9.9.9","isSidechain":false,"message":{"role":"user","content":"pelhaim-project: cabn\nFix the atlas"}}
+{"type":"assistant","uuid":"x2",
+{"type":"assistant","uuid":"x3","parentUuid":"x1","sessionId":"S3","version":"9.9.9","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_R1","name":"Read","input":{"file_path":"/tmp/atlas.png"}}]}}
+{"type":"system","uuid":"x4","parentUuid":"x3","sessionId":"S3","timestamp":"2026-11-23T10:00:30.000Z","subtype":"api_error","level":"error"}
+{"type":"assistant","uuid":"x5","parentUuid":"x4","sessionId":"S3","timestamp":"2026-11-23T10:01:00.000Z","message":{"role":"assistant","stop_re
