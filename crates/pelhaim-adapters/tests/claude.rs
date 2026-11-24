@@ -1077,3 +1077,74 @@ fn notification_for_unknown_task_id_is_ignored() {
         at: ts("2026-11-24T08:00:04Z"),
     }));
 }
+
+/// Cold start: discovery reads mains first, so the parent's whole catch-up,
+/// notifications included, reaches the engine before the child exists.
+fn cold_start(with_meta: bool) -> (Engine, SessionKey, SessionKey) {
+    let parent = SessionKey::claude("S4");
+    let child = SessionKey::claude_sub("S4", "b1");
+    let path = project_dir().join("S4.jsonl");
+    let mut parser = ClaudeFileParser::new(parent.clone(), path.clone(), None, fallback());
+    let mut engine = Engine::new(EngineConfig::default(), RestoredState::default());
+    let text = fs::read_to_string(&path).unwrap();
+    // Everything up to the owner's next prompt, which would rightly make the parent Working.
+    for line in text
+        .lines()
+        .take_while(|l| !l.contains("Publish the notes"))
+    {
+        for e in parser.feed(line.as_bytes()) {
+            engine.apply(Input::Event(e));
+        }
+    }
+    let (child_events, child_parser) = parse_file(
+        &project_dir().join("S4/subagents/agent-b1.jsonl"),
+        child.clone(),
+        Some(parent.clone()),
+    );
+    for e in child_events {
+        engine.apply(Input::Event(e));
+    }
+    if with_meta {
+        let running = fs::read_to_string(project_dir().join("S4/subagents/agent-b1.meta.json"))
+            .unwrap()
+            .replace(r#""finished":true"#, r#""finished":false"#);
+        for e in parse_meta(
+            &child,
+            &parent,
+            running.as_bytes(),
+            child_parser.last_at().unwrap(),
+        ) {
+            engine.apply(Input::Event(e));
+        }
+    }
+    engine.apply(Input::Event(Event::CatchUpDone { tool: Tool::Claude }));
+    (engine, parent, child)
+}
+
+fn state_of(engine: &Engine, key: &SessionKey) -> TrainState {
+    let snap = engine.snapshot();
+    snap.trains
+        .values()
+        .find(|t| t.session == *key)
+        .unwrap()
+        .state
+        .clone()
+}
+
+#[test]
+fn cold_start_notification_before_child_discovery_still_finishes_child() {
+    for with_meta in [true, false] {
+        let (engine, parent, child) = cold_start(with_meta);
+        assert_eq!(
+            state_of(&engine, &child),
+            TrainState::Done,
+            "with_meta={with_meta}"
+        );
+        assert_eq!(
+            state_of(&engine, &parent),
+            TrainState::Idle,
+            "with_meta={with_meta}"
+        );
+        assert_eq!(engine.dropped_events(), 0, "with_meta={with_meta}");
+    }
+}

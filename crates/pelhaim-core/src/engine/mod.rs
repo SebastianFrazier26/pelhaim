@@ -240,6 +240,8 @@ pub struct Engine {
     keep: KeepAwake,
     effects: Vec<Effect>,
     dropped: u64,
+    /// Subagent finishes that arrived before their child was known, keyed by child.
+    early_finishes: BTreeMap<SessionKey, Ts>,
 }
 
 impl Engine {
@@ -270,6 +272,7 @@ impl Engine {
             keep: KeepAwake::default(),
             effects: Vec::new(),
             dropped: 0,
+            early_finishes: BTreeMap::new(),
         }
     }
 

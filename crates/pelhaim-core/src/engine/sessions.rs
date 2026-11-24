@@ -40,6 +40,13 @@ struct Discovered {
     started: Ts,
 }
 
+const EARLY_FINISH_CAP: usize = 256;
+
+/// `claude:<sid>` for `claude:<sid>/<agent_id>`; `None` for a main session.
+fn parent_of(key: &SessionKey) -> Option<&str> {
+    key.0.split_once('/').map(|(p, _)| p)
+}
+
 impl Engine {
     pub(super) fn on_event(&mut self, e: Event) -> bool {
         // The engine models no CLI version; FormatUntested carries what the board needs.
@@ -63,7 +70,19 @@ impl Engine {
             });
         }
         let e = match e {
-            Event::CatchUpDone { .. } => return false,
+            Event::CatchUpDone { .. } => {
+                let known: Vec<SessionKey> = self
+                    .early_finishes
+                    .keys()
+                    .filter(|k| self.by_key.contains_key(*k))
+                    .cloned()
+                    .collect();
+                let mut changed = false;
+                for k in known {
+                    changed |= self.apply_early_finish(&k);
+                }
+                return changed;
+            }
             Event::DecisionExported { id, at } => return self.decision_exported(id, at),
             Event::DecisionExportFailed { id, reason } => {
                 return self.decision_export_failed(id, reason);
@@ -85,9 +104,15 @@ impl Engine {
             return false;
         };
         let Some(&id) = self.by_key.get(&key) else {
+            if let Event::SubagentFinished { at, .. } = e
+                && self.buffer_early_finish(&key, at)
+            {
+                return false;
+            }
             self.dropped += 1;
             return false;
         };
+        let linked = matches!(e, Event::SubagentLinked { .. }).then(|| key.clone());
         // A second finish (a parent's task notification after meta `finished`)
         // must not count as a write or re-berth the child.
         if matches!(e, Event::SubagentFinished { .. }) && self.trains[&id].state == TrainState::Done
@@ -232,7 +257,35 @@ impl Engine {
         if let Some(p) = parent_after.or(parent_before) {
             self.settle_after_turn(p);
         }
+        if let Some(child) = linked {
+            self.apply_early_finish(&child);
+        }
         true
+    }
+
+    /// A parent's catch-up can pass its task notification before the child file
+    /// is discovered (mains are read first). Applying the finish at discovery
+    /// would be undone by the child's own catch-up records, so it waits for the
+    /// child's meta link, or for CatchUpDone.
+    fn buffer_early_finish(&mut self, key: &SessionKey, at: Ts) -> bool {
+        if parent_of(key).is_none() {
+            return false;
+        }
+        if self.early_finishes.len() >= EARLY_FINISH_CAP && !self.early_finishes.contains_key(key) {
+            return false;
+        }
+        self.early_finishes.insert(key.clone(), at);
+        true
+    }
+
+    fn apply_early_finish(&mut self, key: &SessionKey) -> bool {
+        match self.early_finishes.remove(key) {
+            Some(at) => self.on_event(Event::SubagentFinished {
+                key: key.clone(),
+                at,
+            }),
+            None => false,
+        }
     }
 
     /// A main session whose own turn has ended stays Working while any of its
@@ -637,6 +690,8 @@ impl Engine {
         self.open_calls.remove(key);
         self.spawn_requests.retain(|_, p| &p.parent != key);
         self.links.retain(|_, c| c != key);
+        self.early_finishes
+            .retain(|child, _| child != key && parent_of(child) != Some(key.0.as_str()));
         self.expire_alerts_of(id);
     }
 
