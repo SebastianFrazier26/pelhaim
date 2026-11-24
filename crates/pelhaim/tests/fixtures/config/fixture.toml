@@ -1,0 +1,27 @@
+# CLI test config: homes, data dir and HOME come from the child's env (tests/cli.rs).
+mode = ["observe"]
+
+[[project]]
+slug = "ethica"
+name = "ethica"
+order = 1
+
+[[project]]
+slug = "cabn"
+name = "cabn"
+order = 2
+
+[[project]]
+slug = "safeascent"
+name = "SafeAscent"
+order = 3
+
+[[project]]
+slug = "loosy-goose"
+name = "loosy-goose"
+order = 4
+
+[[project]]
+slug = "stringcan"
+name = "stringcan"
+order = 5
