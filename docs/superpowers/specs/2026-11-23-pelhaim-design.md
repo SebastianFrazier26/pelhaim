@@ -1,6 +1,6 @@
 # pelhaim: design
 
-Date: 2026-11-23. Status: draft for owner review; revised the same day with four owner rulings (§5.1). No product code exists yet.
+Date: 2026-11-23. Status: **approved by the owner on 2026-11-23 with three changes** (§5.2), after four earlier rulings the same day (§5.1). No product code exists yet.
 
 ## How to read this doc
 
@@ -65,7 +65,8 @@ These are not in v1. Each could come later.
 
 - A terminal emulator. "Take over a train" opens a real terminal; it does not embed one. **[Agent's call]**
 - An IDE, diff viewer or code browser. The board links out to these.
-- Multi-user use, remote use, or a web UI. pelhaim is local and single-owner.
+- Multi-user use or a web UI. pelhaim is local and single-owner.
+  - Remote control from the owner's own iPhone is planned for M5 (§8.7). It is the only remote surface.
 - A replacement for GitHub Issues, PRs or Actions. Lines map to repos; they do not mirror the tracker.
 - Windows support in v1. See [Open] Q1.
 - Cost accounting beyond showing token and cost counts that a session already reports.
@@ -207,6 +208,33 @@ A builder check on the first draft raised four questions that only the owner cou
    - Steps flagged as decision, merge, prod or security then wait as a yellow alert for the owner's sign-off, in a new "done, awaiting sign-off" state.
    - A long-lived `claude -p` process signals the end of a step with a structured step-complete message, not by exiting. See §7.9.
 
+### 5.2 Owner approval with three changes (2026-11-23)
+
+The owner approved this design on 2026-11-23 with three changes, all **[Owner], 2026-11-23**. They override anything earlier in the doc; the affected sections have been updated.
+
+1. **Auto mode is the default for agents.**
+   - Agents run on their own, and only key decisions become stopping points. That is how the owner's sessions work today.
+   - By default, file edits and commands inside the train's own worktree are auto-approved.
+   - Owner stop points stay:
+     - design and security decisions;
+     - push and PR;
+     - merge;
+     - prod;
+     - anything outside the worktree;
+     - network or secrets;
+     - destructive operations.
+   - Per-project overrides stay.
+   - The policy maps onto the CLIs' own permission modes where they exist. See §10.1.
+2. **Auto-caffeinate while running.**
+   - Keep the Mac awake while any train is active, and release it when none are.
+   - Linux gets an equivalent, or a no-op.
+   - A small indicator shows on the board. See §8.6.
+3. **Remote control from an iPhone is planned.**
+   - A compatible iOS app receives pelhaim alerts as push notifications.
+   - The owner can answer them (option buttons, free text) and see a compact board.
+   - M1–M4 build only the seam: a remote API on the engine's alert/answer bus.
+   - The app, relay and pairing are milestone M5. See §8.7.
+
 ## 6. Architecture
 
 All of §6 is **[Agent's call]** unless marked otherwise.
@@ -251,6 +279,8 @@ pelhaim/
     pelhaim-store/           # SQLite event log + snapshots; decision-log markdown writer
     pelhaim-board/           # layout, scene building, palette, font glyph data → DisplayList. Pure.
     pelhaim-gpu/             # winit + wgpu renderer of DisplayList, IME, AccessKit bridge
+    pelhaim-remote/          # RemoteApi seam (M1); M5: pairing, E2E crypto, relay client   (§8.7)
+    pelhaim-relay/           # M5: the small relay + APNs sender (separate binary, deployable)
     pelhaim/                 # the binary: CLI (clap), config, wiring
   assets/font/               # glyph source (text grids) — original work, MIT
   docs/
@@ -276,7 +306,8 @@ pub trait Provider: Send + Sync {
 
 pub trait Tool: Send + Sync {                              // direct mode tools
     fn spec(&self) -> ToolSpec;                            // name, JSON schema, risk class
-    fn risk(&self, input: &serde_json::Value) -> Risk;     // ReadOnly | WritesWorkspace | Executes | GitWrites | Network
+    fn risk(&self, input: &serde_json::Value) -> Risk;     // ReadOnly | WorktreeWrite | WorktreeExec | GitTrainBranch
+                                                           // | OutsideWorktree | Network | Secrets | Destructive  (§10.1)
     async fn call(&self, ctx: &ToolCtx, input: serde_json::Value) -> ToolOutput;
 }
 ```
@@ -354,14 +385,29 @@ kind = "openai_compat"
 base_url = "http://127.0.0.1:11434/v1"
 model = "<set by owner>"
 
-[approval]                            # per risk class: ask | allow | deny. Applies to Direct tools and to
-                                      # pelhaim's own git actions in Launch and Direct (§7.8)
+[approval]                            # AUTO MODE is the default (owner, 2026-11-23; §10.1)
+                                      # per risk class: allow | ask | deny
 read_only = "allow"
-writes_workspace = "ask"
-executes = "ask"
+worktree_write = "allow"              # edits inside the train's own worktree
+worktree_exec = "allow"               # commands run with cwd = worktree, not touching anything outside it
+git_train_branch = "allow"            # branch, worktree, commit on the train's own branch
+outside_worktree = "ask"              # any read-write path outside the worktree
+network = "ask"
+secrets = "ask"                       # .env, keychains, credential files, key-shaped env vars
+destructive = "ask"                   # §10.1 list: reset --hard, clean, branch -D, recursive rm, history rewrite, …
+# Fixed, not configurable: push and open-PR always need an owner alert; merge to main never happens;
+# design/security/merge/prod steps always stop for sign-off (§7.9).
+
+[project_overrides.safeascent.approval]   # per-project overrides (owner, 2026-11-23); same keys as [approval]
 network = "deny"
-git_writes = "ask"                    # branch, worktree, commit on a train branch
-# push and open-PR are not configurable: always an owner alert (§7.8). Merge to main: never.
+
+[keep_awake]                          # §8.6
+enabled = true
+include_observed = true               # observed working sessions also hold the Mac awake
+keep_display_awake = false            # adds -d
+
+[remote]                              # §8.7. The seam ships from M1; the bridge is off until M5
+enabled = false
 
 [git]
 branch_prefix = "pelhaim/"            # train branches: pelhaim/<project>/<station-id>-<train#>
@@ -583,13 +629,13 @@ So a train's motion means activity, never invented progress.
 - **Stacking:** a dependent station branches off its predecessor's branch, so work stacks up. A root station branches off `main`.
 - **Main is the owner's:** merges to main go through PRs that the owner merges. pelhaim never merges to main and never commits to main.
 - **Conflicts:** a merge conflict shows as a red X crossover on the board, plus an alert.
-- **Approval:** git writes (create branch, add worktree, commit on a train branch) are their own risk class, `git_writes`, with its own approval policy in config. **Pushing and opening PRs always need the owner's approval through an alert.** This is not configurable.
+- **Approval:** git writes (create branch, add worktree, commit on a train branch) are their own risk class, `git_train_branch`, with its own approval policy in config. Under auto mode (§10.1) it defaults to allow. **Pushing and opening PRs always need the owner's approval through an alert.** This is not configurable.
 
 **Mechanics (agent's call)**
 
 - **Branch name:** `pelhaim/<project-slug>/<station-id>-<train#>`. **Worktree path:** `<worktree_root>/<project-slug>/<branch-leaf>`.
 - **Lifecycle:**
-  1. When a station becomes Ready, pelhaim runs `git worktree add -b <branch> <path> <base>` in the project root, under the `git_writes` policy. The base is `main` for a root station, or its predecessor station's branch.
+  1. When a station becomes Ready, pelhaim runs `git worktree add -b <branch> <path> <base>` in the project root, under the `git_train_branch` policy. The base is `main` for a root station, or its predecessor station's branch.
   2. The agent works with that worktree as its cwd. Launch mode: `claude -p` runs with the worktree as its cwd; Codex gets `-C <worktree>`. Direct mode: tool confinement root = the worktree.
   3. Commits happen on the train branch only. pelhaim refuses any command, its own or an agent tool call it mediates, whose effect is a commit to `main`, a merge into `main`, or a push without approval. In Launch mode pelhaim cannot mediate the CLI's own tool calls, so it relies on the CLI's permission settings and the owner's global rules, and it checks after each step that `main` has not moved. If it has, it raises a red alert.
   4. When a station is fully done (§7.9), its branch is kept. The worktree may be removed (owner setting) once no dependant still needs it as a base.
@@ -617,11 +663,12 @@ Active ──agent declares complete──► Checking ──all checks pass─�
 ```
 
 - **Checks:** each `acceptance` entry is a `Check`.
-  - `Command{argv}` runs in the train's worktree under the `executes` policy, with a timeout. Exit 0 = pass. The plan's project can set a default check, e.g. `cargo test --workspace`.
+  - `Command{argv}` runs in the train's worktree under the `worktree_exec` policy, with a timeout. Exit 0 = pass. The plan's project can set a default check, e.g. `cargo test --workspace`.
   - `Manual{text}` cannot be automated, so it turns the station into a sign-off step regardless of flags.
   - Checks are run by pelhaim, not by the agent, so "tests pass" is never just the agent's word. **[Agent's call]**
 - **Sign-off flags:** `decision`, `merge`, `prod`, `security`, set per step by the planner or the owner while editing the plan. The `Signoff` alert shows the agent's completion summary, the check results, the diffstat, and buttons `[Sign off]`, `[Reject with note]` and `[Log decision]`.
 - **Observe mode** has no checks: an observed train's turn end is just a berth (§8.1).
+- **Auto mode** (**[Owner], 2026-11-23**; §10.1) governs the tool calls inside a station and does not change this definition of done. Edits and commands inside the worktree raise no alerts. The stop points are these sign-offs, plus the §10.1 stop classes and the §8.5 routing rules.
 
 **How a step ends in a long-lived process** (agent's call)
 
@@ -723,7 +770,8 @@ All flags in this section were verified 2026-11-23 against `--help` unless marke
   claude -p --output-format stream-json --input-format stream-json --verbose \
          --session-id <uuid> -n "pelhaim <train#> <station>" \
          --mcp-config <pelhaim step_complete server> \
-         [--model …] [--permission-mode …] [--add-dir …]
+         --permission-mode auto --disallowedTools "Bash(git push *)" "Bash(gh pr merge *)" \
+         [--model …]          # auto mode default, owner 2026-11-23; mapping in §10.1
   ```
   - The first prompt line is always `pelhaim-project: <slug>` (§7.7). The prompt ends with the step-complete instructions (§7.9).
   - `--session-id <uuid>` (verified) lets pelhaim pick the id up front, so it knows the JSONL path before the first byte arrives.
@@ -739,7 +787,7 @@ All flags in this section were verified 2026-11-23 against `--help` unless marke
   - The `--permission-prompt-tool` flag is referenced there but **not listed as its own entry in `--help`** (verified absence), so treat its exact form as unverified.
   - The design wants pelhaim to be "the SDK host": it receives permission requests on stdout and replies on stdin. The exact control-message shapes, and whether `AskUserQuestion` is available and answerable in `-p` mode, are **unverified**.
   - **First task of M2 is a spike** that runs a real session and records the stream. **[Open]** Q6.
-  - Fallback if no host protocol is usable: `--permission-mode` plus `--allowedTools` set by the owner's policy, and questions answered by sending the answer as the next user message on stdin.
+  - Fallback if no host protocol is usable: `--permission-mode` plus `--allowedTools` set from the §10.1 policy, and questions answered by sending the answer as the next user message on stdin.
 - **Events:** each stream-json line is parsed into the same internal `Event`s as observe mode: tool use → step, result → berth, and so on.
   - The adapter *also* tails the session's own JSONL as a cross-check, which makes takeover seamless (§8.2.4).
 
@@ -747,7 +795,7 @@ All flags in this section were verified 2026-11-23 against `--help` unless marke
 
 - **Spawn:**
   ```
-  codex exec --json -C <train worktree> [-m <model>] [-s workspace-write] [--output-schema …] "pelhaim-project: <slug>\n…"
+  codex exec --json -C <train worktree> -s workspace-write --approve-for-me [-m <model>] [--output-schema …] "pelhaim-project: <slug>\n…"
   ```
   All of these flags were verified. `-C` points at the train's worktree, not the project root (§7.8).
 - **Local models through Codex:** `--oss` and `--local-provider lmstudio|ollama` are verified. Launch mode can therefore also drive local models through Codex, independently of Direct mode.
@@ -760,7 +808,7 @@ All flags in this section were verified 2026-11-23 against `--help` unless marke
 #### 8.2.3 Flow
 
 ```
-owner approves plan ─► engine: station Ready ─► git: worktree + branch off base (git_writes policy, §7.8)
+owner approves plan ─► engine: station Ready ─► git: worktree + branch off base (git_train_branch policy, §7.8)
    ─► Command::Launch{station, tool, worktree} ─► adapter spawns process
    stdout line ─► parse ─► Event::{TrainStep|AlertRaised|TrainBerthed|TrainFailed|SubagentSpawned}
    owner clicks an option in an alert ─► Command::Answer{alert, answer} ─► adapter writes to stdin
@@ -816,9 +864,9 @@ limits per train: max_turns, max_tokens, max_cost (if provider reports usage) �
 - **Local models with weak tool calling:** `ModelCaps.tool_calling = false` switches to a text protocol: a JSON block in fenced output, parsed and validated. How well this works is **[Open]** Q9.
 - **Built-in tools (v1):**
   - `read_file`, `list_dir`, `glob`, `grep`: risk ReadOnly.
-  - `write_file`, `edit_file`: risk WritesWorkspace.
-  - `run`: risk Executes; an argv, not a shell string, by default.
-  - `git_commit` (risk GitWrites): commits on the train's own branch only. No tool can push, merge, or touch `main` (§7.8).
+  - `write_file`, `edit_file`: risk WorktreeWrite, or OutsideWorktree / Secrets by path (§10.1).
+  - `run`: risk WorktreeExec, or Network / OutsideWorktree / Secrets / Destructive by the §10.1 classifier; an argv, not a shell string, by default.
+  - `git_commit` (risk GitTrainBranch): commits on the train's own branch only. No tool can push, merge, or touch `main` (§7.8).
   - `ask_user`, `spawn_agent`, `step_complete`, `report`.
   - No network tool in v1.
 - **The orchestration is the core, and is written code:** the plan DAG, scheduling, the approval gate, budgets, and subagent lifecycle and result routing. The model only fills in plans and does the work inside a station.
@@ -866,6 +914,148 @@ These are the owner's global norms, made concrete enough to build in M2. Each is
 **Output:** a plan validated by §7.5 plus the rule checks above, shown as a `PlanReview` alert.
 
 **What stays with the Claude Code orchestrator until replacement:** everything the owner hasn't moved over. pelhaim doesn't need feature parity in M2. Replacement is complete when the owner says so; that is also when the decision log can move to a single writer.
+
+### 8.6 Keep the Mac awake while trains run
+
+**[Owner], 2026-11-23:** keep the Mac awake while any train is active, release it when none are, and show a small indicator. The mechanism is the **[Agent's call]**.
+
+**When the hold is taken**
+
+- pelhaim holds the machine awake while at least one train is:
+  - `Working` or `Checking`, in Launch or Direct;
+  - or an observed train that is `Working`, when `include_observed = true` (the default). Observed agents run on this Mac too.
+- When `[remote].enabled = true`, a train `Waiting` on an answer also holds. Otherwise the Mac could sleep and the phone's answer could never arrive.
+- The hold is released 60 s after the last active train stops. The delay avoids flapping between steps.
+
+**Mechanism on macOS:** `caffeinate -i -m -s -w <pelhaim pid>`, held as a child process. It is spawned on the transition from 0 to 1 active trains, and killed on the transition back to 0.
+
+Flags verified 2026-11-23 against `man caffeinate`:
+
+| Flag | Meaning | Used? |
+|---|---|---|
+| `-i` | prevent idle sleep | yes |
+| `-m` | prevent disk idle sleep | yes |
+| `-s` | prevent system sleep; "valid only when system is running on AC power" | yes |
+| `-w <pid>` | release when that process exits | yes |
+| `-d` | keep the display awake | only with `keep_display_awake = true`, default off. Agents don't need the screen, and a lit screen burns power. |
+| `-u` | "declare that user is active" | no. The man page says it defaults to a 5-second timeout, so it does nothing useful for a long hold. |
+
+The owner suggested `-dimsu`; the table explains the two flags left out.
+
+Why `caffeinate` rather than an IOKit `IOPMAssertionCreateWithName` call:
+
+- It needs no `unsafe` FFI or IOKit bindings.
+- It is trivially testable: the process exists, or it doesn't.
+- The owner can see it with `pmset -g assertions`.
+- `-w` releases the hold even if pelhaim is killed with SIGKILL. An IOPMAssertion is also released when its process dies, so the two are equal on safety, and `caffeinate` wins on simplicity.
+- IOKit stays the fallback if `caffeinate` ever goes away.
+
+**Limits** (inferred from the `-s` wording and standard macOS behaviour; verify on the owner's machine):
+
+- On battery only `-i` and `-m` apply.
+- Closing the lid on battery still sleeps the machine.
+- The indicator says "on battery: lid-close will sleep" when that applies.
+
+**Linux**
+
+- When `systemd-inhibit` is on PATH, hold `systemd-inhibit --what=sleep:idle --who=pelhaim --why="agents running" sleep infinity` as a child, killed on release. This command is from memory and unverified; `systemd-inhibit` isn't installed on this Mac. Check `--help` on a Linux box before relying on it.
+- Otherwise do nothing, and show the indicator as "not held".
+
+**Indicator**
+
+- A small lamp in the console strip's right-hand status area, next to the mode toggles.
+- Lit (in `glyph` teal), labelled `AWAKE` with the count of trains holding it.
+- Dim when not held.
+- Hovering shows the reason and the battery caveat. Clicking it pauses the hold for 1 hour.
+- An a11y name is provided.
+
+### 8.7 Remote control from an iPhone: the seam now, the app in M5
+
+**[Owner], 2026-11-23:** a compatible iOS app gets pelhaim alerts as push notifications, can answer them (option buttons, free text), and shows a compact board. M1–M4 build only the seam. The design below is the **[Agent's call]**; open choices are flagged as owner decisions or questions.
+
+#### 8.7.1 The seam (built from M1)
+
+The engine exposes one internal API that the local UI and any future remote both use, so the remote path is exercised from day one:
+
+```rust
+pub trait RemoteApi {                     // implemented by the engine handle
+    fn subscribe_alerts(&self) -> broadcast::Receiver<AlertEvent>;      // Raised | Updated | Answered | Dismissed
+    fn compact_snapshot(&self) -> CompactBoard;                         // lines → trains {number, state, station, label}, open alert ids
+    fn answer(&self, a: Answer) -> Result<AnswerOutcome>;               // Answer { alert_id, choice: Options(Vec<idx>) | Text(String), origin }
+    fn dismiss(&self, alert_id: AlertId, origin: Origin) -> Result<()>;
+}
+pub enum Origin { Local, Remote { device_id: DeviceId } }
+```
+
+- **Answers are idempotent, and the first one wins.** A late answer to an alert already answered elsewhere returns `AlreadyAnswered { by, at }`, and the phone shows "answered on Mac".
+- **Every decision row records its origin** (Mac or which device).
+- **Each alert kind declares `remote_answerable`.** Defaults:
+  - Question, Permission, Signoff, AssignProject: answerable;
+  - GitApproval (push or PR) and anything flagged `security`: view-only from the phone unless `[remote].allow_high_risk = true`, and even then only after Face ID in the app. This is an owner decision; see Q18.
+- **`CompactBoard` is a small, versioned, serde type** with no transcript text: just line names, train numbers, states and alert summaries. Alert bodies travel only inside answerable alerts, and only encrypted.
+- **M1–M4 deliverable:** the trait, the `Origin` field, idempotent answers, `CompactBoard`, plus tests that drive answers through `RemoteApi` with `Origin::Remote`. No network code.
+
+#### 8.7.2 Architecture (M5)
+
+```
+pelhaim (Mac) ──outbound TLS WebSocket──► relay ◄──outbound TLS WebSocket── iOS app (foreground)
+                                            │
+                                            └──► APNs ──► iPhone (background push; Notification Service Extension decrypts)
+```
+
+- **No open ports, by default and in every configuration.** pelhaim and the phone both connect *out* to the relay. Nothing listens on the Mac.
+- **The relay** (`pelhaim-relay`, Rust/axum) is deliberately dumb:
+  - it routes opaque encrypted envelopes between paired ids;
+  - it queues up to N envelopes per device for 24 h while the phone is offline;
+  - it sends APNs pushes.
+  - It holds no keys that can decrypt anything. It sees routing ids, sizes, timing and APNs device tokens. That metadata is stated plainly in the README.
+- **Push:** the APNs payload carries `mutable-content: 1` and only the encrypted envelope. The app's Notification Service Extension decrypts it on the device and writes the visible text ("1148 · SafeAscent: Proceed to C1?"). Apple sees ciphertext only.
+  - The notification offers a text-reply action and an "Open" action.
+  - Option buttons are shown in the app, or as notification actions if a fixed category set proves workable; see Q19.
+  - This mechanism (`mutable-content`, service extension, text-input action) is standard iOS from memory. Verify it against Apple's current docs at M5.
+
+#### 8.7.3 Security
+
+- **Identities:**
+  - pelhaim has a long-term X25519 key (encryption) and an Ed25519 key (signing), stored in the macOS Keychain.
+  - The phone generates its own pair in the Secure Enclave or Keychain.
+  - No key ever leaves its device.
+- **Pairing (QR plus a key exchange):**
+  1. The owner runs `pelhaim remote pair`, or uses the board's Devices panel.
+  2. The board shows a QR code holding: the relay URL, pelhaim's public keys, a fresh 32-byte one-time pairing secret, and an expiry (5 minutes).
+  3. The app scans it and sends its public keys to pelhaim through the relay. The message is authenticated with a MAC keyed from the pairing secret, so only someone who saw the QR can pair.
+  4. Both sides show a 6-digit code derived from both public keys. The owner confirms that the codes match on the Mac. This blocks a relay that swaps keys.
+  5. The device is stored (id, keys, name, paired-at). The pairing secret is burned.
+- **End-to-end encryption:**
+  - Every envelope is sealed for one recipient with **HPKE in Auth mode** (RFC 9180): DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305.
+  - Auth mode proves the sender's identity key, and a fresh ephemeral key per message gives per-message forward secrecy for the sender's side.
+  - HPKE fits the store-and-forward relay, because no live handshake is needed.
+  - Rust: the `hpke` crate. iOS: CryptoKit's HPKE (iOS 17+, from memory; verify at M5).
+- **Auth to the relay:**
+  - Each party proves its device id by signing a relay challenge with its Ed25519 key.
+  - The relay only forwards between ids registered as a pair. It rate-limits per id.
+  - Pairing registration on the relay requires a proof derived from the pairing secret.
+- **Replay protection:** each envelope's authenticated data carries sender id, recipient id, a monotonic 64-bit sequence number and a timestamp.
+  - The receiver rejects a sequence number at or below the last one it accepted from that peer, and anything older than 10 minutes.
+  - Answers also carry the alert id, so an answer is only accepted while its alert is open (idempotency, §8.7.1).
+- **Revocation and loss:**
+  - The Devices panel on the Mac revokes a device immediately: it deletes the key locally and deregisters it at the relay.
+  - The app can require Face ID to open. Default on; owner decision Q18.
+- **Least privilege:** the remote can do only what `RemoteApi` exposes: answer, dismiss and read `CompactBoard`.
+  - It cannot launch, plan, change config, read transcripts, or approve anything marked view-only.
+- **The relay holds no secrets** beyond the APNs signing key (.p8) and its own TLS certificate. Both live in the host's secret store; never in the repo, with `.env.example` placeholders only.
+
+#### 8.7.4 Owner decisions and cost (flagged)
+
+- **Apple Developer Program:** needed for APNs and for installing the app on a phone beyond short-lived development builds. Cost: **$99 per year** (Apple's long-standing price; re-check). **Owner decision.**
+- **Relay hosting:** a small always-on service. Railway (one of the owner's usual hosts) or any small VM; likely a few dollars a month (unverified; check current pricing). Vercel functions are a poor fit for long-lived WebSockets. **Owner decision.** See Q15.
+- **Use an existing push service instead of our own relay?** See Q16.
+  - **ntfy:** self-hostable, has an iOS app. But answers would have to come back another way, and it has no E2E by default.
+  - **Pushover:** one-off paid app; notifications only, no answering.
+  - **Tailscale:** no public relay at all; the phone reaches the Mac over the tailnet. But the Mac would have to listen on its tailnet IP, and you still need APNs for background pushes.
+
+  Recommendation: our own relay. Answering plus E2E is the point, and none of the off-the-shelf options gives both.
+- **Native app stack:** SwiftUI app plus a Notification Service Extension, in a separate repo `pelhaim-ios`, public, MIT. The alternative is a cross-platform stack (React Native, Flutter); rejected because the push extension and CryptoKit are native-first. **Owner decision.** See Q17.
 
 ## 9. UI spec
 
@@ -1114,13 +1304,7 @@ All of §10 is **[Agent's call]**, from the owner's norms. The owner should look
   - A test runs the observe adapters over a fixture home and asserts no file in it changed: mtime, size and hash are unchanged, and no new files appear.
 - **Direct-mode tools:**
   - *Confinement:* every path is canonicalised and must sit under the train's workspace root. Symlinks that escape are refused. The `run` tool gets argv, not a shell string, unless policy allows `sh -c`.
-  - *Approval gate:* there is a policy per risk class (config). Defaults:
-    - read-only: allow;
-    - writes: ask;
-    - execute: ask;
-    - git writes: ask;
-    - network: deny.
-    "Always allow for this train" is session-scoped and never persisted silently.
+  - *Approval gate:* there is a policy per risk class (config), with **auto mode as the default** (**[Owner], 2026-11-23**). See §10.1 for the classes, defaults and stop points. "Always allow for this train" is session-scoped and never persisted silently.
   - *Isolation:* each train runs in its **own git worktree** on its own branch, so every change is reviewable and can be discarded. **[Owner], 2026-11-23**: this applies to Launch mode too (§7.8).
   - *Process limits:* timeout, output cap, scrubbed environment. The child does not inherit `ANTHROPIC_API_KEY` or other secrets; there is an explicit allowlist.
   - *OS sandbox:* not in v1. macOS `sandbox-exec` is deprecated, and Linux options (Landlock, bubblewrap) need care. Called out as Risk R4.
@@ -1130,7 +1314,7 @@ All of §10 is **[Agent's call]**, from the owner's norms. The owner should look
 - **Git** (**[Owner], 2026-11-23**; §7.8):
   - pelhaim never commits to or merges into `main`.
   - Push and PR creation only happen after an owner-approved alert.
-  - Branch, worktree and commit actions go through the `git_writes` policy.
+  - Branch, worktree and commit actions go through the `git_train_branch` policy (auto-allowed by default).
   - After every Launch step, pelhaim checks that `main` has not moved, because it cannot mediate the CLI's own git commands.
 - **Untrusted content:**
   - Transcript text, tool output and model output are data. They are rendered as text and never interpreted as commands by pelhaim.
@@ -1141,6 +1325,61 @@ All of §10 is **[Agent's call]**, from the owner's norms. The owner should look
   - `cargo audit`, or `cargo-deny` with advisories, licences and bans.
   - Dependencies pinned via the committed `Cargo.lock`.
   - Run `/secscan` before the first push.
+
+### 10.1 Auto mode and stop points
+
+**[Owner], 2026-11-23:** auto mode is the default. Agents run on their own, and only key decisions stop them. The risk classes, the classifier and the CLI mapping are the **[Agent's call]**. CLI flags were verified 2026-11-23 against `claude --help` 2.1.331 and `codex --help` / `codex exec --help` 0.158.0.
+
+**Classes and defaults**
+
+| Class | What falls in it | Default |
+|---|---|---|
+| `read_only` | reads anywhere the agent is allowed to see, except secrets | allow |
+| `worktree_write` | create, edit or delete a single file inside the train's own worktree | allow |
+| `worktree_exec` | a command with cwd = the worktree that the classifier doesn't put in a class below (builds, tests, linters, formatters) | allow |
+| `git_train_branch` | branch, worktree, commit on the train's own branch | allow |
+| `outside_worktree` | any write, or any command argument, naming a path outside the worktree (after canonicalising and following symlinks) | **ask** |
+| `network` | network-capable commands (`curl`, `wget`, `ssh`, `scp`, `git fetch/pull/push`, package installs, `npm publish` and similar) and any network tool | **ask** |
+| `secrets` | reading `.env*`, keychains, `~/.ssh`, `~/.aws`, credential and token files; env vars with key-shaped names | **ask** |
+| `destructive` | `git reset --hard`, `git clean`, `git branch -D`, `git push --force`, history rewrites (`rebase`, `filter-*`, `commit --amend` on shared commits), recursive `rm`, `drop`/`truncate` against a database, anything touching a deploy target | **ask** |
+| push / open PR | always an owner alert. Not configurable (§7.8). | fixed |
+| merge to main | never done by pelhaim | fixed |
+| design / security / merge / prod steps | stop for sign-off after checks (§7.9). Not configurable. | fixed |
+
+- **Per-project overrides:** `[project_overrides.<slug>.approval]` uses the same keys (**[Owner]**: overrides stay).
+  - An override can tighten anything.
+  - It can loosen any class except the fixed rows.
+  - Loosening `destructive`, `secrets` or `outside_worktree` draws a red badge on the line label.
+- **Classifier (Direct mode):**
+  - Written code over the tool input: canonicalised paths compared with the worktree root, and argv matched against the lists above.
+  - When unsure, it picks the stricter class.
+  - Without an OS sandbox it is a best-effort classifier, not a guarantee. R4 records this.
+- **How auto mode fits §7.9:** auto mode governs the tool calls *inside* a station. The definition of done is unchanged.
+  - A station still ends with `step_complete` plus checks run by pelhaim.
+  - Flagged stations still stop for sign-off.
+  - So a typical station produces zero alerts until the end, and an alert only at a real stop point. That matches how the owner's sessions run today.
+- **Routing rules (§8.5) still apply on top:** an unplanned design or security question is a stop point whatever the policy says.
+
+**Mapping onto the CLIs (Launch mode)**
+
+- **Claude Code** (`claude -p`):
+  - `--permission-mode auto`. Verified as a choice; the full list is `acceptEdits`, `auto`, `bypassPermissions`, `manual`, `dontAsk`, `plan`.
+    - The exact semantics of `auto` aren't documented in `--help`. The design assumes it is the classifier-backed auto mode the owner already uses interactively, which allows routine work and escalates risky actions. The M2 spike must confirm this.
+    - If it isn't, fall back to `acceptEdits` plus `--allowedTools` for in-worktree commands.
+  - `--permission-prompts host` (verified; the default) sends whatever the CLI does escalate to pelhaim, which raises it as an alert.
+  - `--disallowedTools` (verified; pattern syntax like `"Bash(git *)"`) hard-blocks the fixed stop points the CLI shouldn't attempt at all, e.g. `"Bash(git push *)"` and `"Bash(gh pr merge *)"`. pelhaim performs push and PR itself after the owner approves.
+  - The cwd is the train's worktree, and no `--add-dir` is passed by default, so the CLI's own file scope is the worktree.
+  - `bypassPermissions` and `--dangerously-skip-permissions` are never used unless the owner sets them per project (§10).
+- **Codex** (`codex exec`):
+  - `-s workspace-write` (verified) gives Codex's own sandbox, scoped to the workspace = the worktree.
+  - `--approve-for-me` (verified: "Route approval requests through automatic review using the workspace-write sandbox") is the closest match to auto mode.
+  - `-a, --ask-for-approval <on-request|never>` is verified only on top-level `codex`. It is **not listed in `codex exec --help`**, so don't pass it to `exec`. A `-c` config-key equivalent is unverified.
+  - How the sandbox treats network access by default is unverified. Check it in the M2 spike, and add `-c` overrides only after confirming the key names.
+  - `--dangerously-bypass-approvals-and-sandbox` is never used unless set per project.
+- **What the CLIs can't express:** pelhaim enforces it after the fact instead:
+  - the post-step checks that `main` and remotes haven't moved (§7.8);
+  - a diff scan of the worktree for files written outside expected paths;
+  - a red alert on any violation.
 
 ## 11. Testing strategy
 
@@ -1155,6 +1394,9 @@ All of §10 is **[Agent's call]**, from the owner's norms. The owner should look
 | Done / sign-off | Engine plus fake checks | Declare → Checking → Done; a failing check returns to Active, then Failed after `max_check_attempts`; flagged steps stop at AwaitingSignoff and don't release dependants; reject-with-note; plan validation rejects design/security steps without flags. |
 | Providers | `wiremock` HTTP server | Anthropic SSE and OpenAI-compatible streaming, tool-call assembly from deltas, errors, retries, key never in logs (assert on captured logs). |
 | Runtime | A scripted fake `Provider` | Approval gate per risk class; path confinement (escape attempts); budgets; `spawn_agent` / `ask_user` round trips; worktree creation. |
+| Auto mode (§10.1) | Table-driven classifier tests | Every row of the class table, with positive and negative cases (`../` escapes, symlinks out of the worktree, `git push` hidden in `sh -c`, `.env` reads, `rm -r`); a stricter class always wins; per-project overrides tighten and loosen, but never the fixed rows; the Launch spawn args carry the §10.1 mapping exactly. |
+| Keep awake (§8.6) | A fake `caffeinate` / `systemd-inhibit` on `PATH` that records its argv and lifetime | Held exactly while ≥1 train is active; the 60 s release delay; `-w <pid>` passed; `-d` only when configured; observed trains count when `include_observed`; a no-op path when neither tool is present. |
+| Remote seam (§8.7.1) | Engine plus `RemoteApi` | Answers with `Origin::Remote`; first answer wins and the later one gets `AlreadyAnswered`; view-only kinds refuse remote answers; `CompactBoard` contains no transcript text (asserted). M5 adds: pairing with the code check, HPKE round trip, replay and old-timestamp rejection, a relay that never sees plaintext (a test relay asserting envelopes are opaque), and revocation. |
 | Store | Temp dirs | Event replay equals projections. Decision-log writer: inserts under the right heading, new section creation, concurrent-modification retry, byte-identical preservation of the rest of the file (golden files). |
 | Board (scene) | `insta` snapshots of the `DisplayList`, serialised as compact RON | Fixed fixture states lead to identical display lists. This catches layout and colour regressions without a GPU. |
 | GPU renderer | Offscreen render to texture, then compare PNG to a golden with a per-pixel tolerance | Run locally on macOS (Metal), and on Linux CI with Mesa `lavapipe`. Keep a small set of goldens: board, alert, inset, console. If lavapipe proves flaky, CI runs scene snapshots only and pixel goldens stay a local `cargo test --features gpu-goldens`. |
@@ -1202,6 +1444,8 @@ One command: `cargo test --workspace`. Goldens are updated with `cargo insta rev
 - pelhaim only observes the Claude Code orchestrator in M1 (§8.5).
 - Console strip with local commands only.
 - AccessKit basics.
+- Keep-awake (§8.6) with its indicator. Observed working trains hold the Mac awake.
+- The `RemoteApi` seam (§8.7.1): the trait, `Origin`, idempotent answers, `CompactBoard`. The local UI answers through it. No network code.
 - **Done when:**
   - with the owner's real 7 projects configured, every **tagged** Claude Code and Codex session and agent shows as a train on the right line, and untagged ones land on Unsorted with an assign alert (**[Owner], 2026-11-23**);
   - the orchestrator session shows on the DISPATCH line, with its subagents branching onto their lines;
@@ -1216,27 +1460,44 @@ One command: `cargo test --workspace`. Goldens are updated with `cargo insta rev
 2. `launch::claude`, `launch::codex`; answering; take over and detach; dedup with observe.
 3. Dispatcher planning via a launched session with `--json-schema` / `--output-schema` to produce Plan JSON. Plan review alert, `$EDITOR` editing, approval, the scheduler, and cleared-route rendering.
 4. pelhaim as orchestrator: the routing rules of §8.5, with automatic decision rows.
-5. Git flow (§7.8): worktree and branch per train, stacking, merge conflicts, push/PR approval alerts.
-6. Definition of done (§7.9): `step_complete` (MCP tool or final-line JSON), checks, sign-off states and alerts.
-7. The console sends to the dispatcher; `@train` messages.
+5. Auto mode for Launch (§10.1): the CLI permission mapping confirmed by the spike, and the post-step violation checks.
+6. Git flow (§7.8): worktree and branch per train, stacking, merge conflicts, push/PR approval alerts.
+7. Definition of done (§7.9): `step_complete` (MCP tool or final-line JSON), checks, sign-off states and alerts.
+8. The console sends to the dispatcher; `@train` messages.
 - **Done when:** the owner can type a goal, approve a 4-step plan with one dependency fork, and watch 2 trains run in parallel, each in its own worktree. Along the way they answer one question from the board, take over one train in a terminal, see a dependent station branch off its predecessor's branch, sign off one flagged step, approve one PR (opened, never merged, by pelhaim), and see every decision recorded.
 
 **M3: Direct mode**
 
 - `Provider` trait, `anthropic`, `openai_compat` (tested against a local Ollama or LM Studio).
-- Agent loop, tools, approval gate, worktree isolation, budgets, `spawn_agent` / `ask_user`.
+- Agent loop, tools, the auto-mode approval gate and classifier (§10.1), worktree isolation, budgets, `spawn_agent` / `ask_user`.
 - The planner runs on a provider.
-- **Done when:** the same M2 acceptance run works with Direct mode on Anthropic, and on one local model, with every write and exec going through the approval gate.
+- **Done when:** the same M2 acceptance run works with Direct mode on Anthropic, and on one local model, with every tool call classified by the approval gate: in-worktree work auto-approved, and every stop point in §10.1 raising an alert.
 
 **M4: Polish** (optional)
 
 - On-board plan editing (drag dependencies), hand back after take-over, wall mode across multiple windows, the on-set post pass, Windows, a bundled fallback font.
 
+**M5: Remote control from an iPhone** (**[Owner], 2026-11-23**; §8.7)
+
+- Needs the owner decisions in §8.7.4 first: the Apple Developer account, relay hosting, and the app stack.
+- `pelhaim-relay` (deployed, with CI and a deploy job before the first production push), `pelhaim-remote` (pairing, HPKE, relay client), and a Devices panel on the board.
+- `pelhaim-ios` (SwiftUI app + Notification Service Extension) in its own repo: pairing by QR, an alert list, answering (options and free text), a compact board, Face ID gate.
+- **Done when:**
+  - the owner pairs their iPhone by QR with a matching code;
+  - an alert from a running train arrives as a push within ~5 s;
+  - the notification text is readable on the lock screen while the relay and APNs only ever handled ciphertext;
+  - answering from the phone unblocks the train and records a decision with origin "iPhone";
+  - an answer replayed through the relay is rejected;
+  - revoking the device on the Mac stops all delivery.
+
+M5 can come before M4, since M4 is optional polish. It must come after M2, because answering only matters once pelhaim runs trains it can answer.
+
 Why this order:
 
 - M1 delivers the owner's current orchestrator job, minus answering, with zero risk to running sessions. It runs alongside the Claude Code orchestrator (**[Owner], 2026-11-23**).
 - M2 adds control over the CLIs the owner already trusts.
-- M3, the biggest build, comes last, once the board and engine are proven.
+- M3, the biggest build, comes after, once the board and engine are proven.
+- M5 adds a second client to an API that has been exercised since M1. That's why the seam ships early and the network parts late.
 
 ## 14. Open questions for the builder
 
@@ -1256,6 +1517,13 @@ Each has a default so work isn't blocked.
 12. **Line ordering:** fixed config order vs float-on-alert. Default: config order, with lines holding open alerts floated up. DISPATCH is always first and Unsorted always last.
 13. **`step_complete` transport for Claude Launch:** an MCP tool vs the final-line JSON. Default: the MCP tool. Settle in the M2 spike.
 14. **Signing off a step that its dependants already branched from** (for example after reject-with-note produces new commits). Default: mark the dependants "base moved" and offer a rebase; never rebase automatically.
+15. **Relay hosting** (owner decision, §8.7.4). Default if no answer: Railway, as the smallest always-on service. Nothing is deployed without the owner.
+16. **Use an existing push service** (ntfy, Pushover) or Tailscale instead of our own relay? Default: our own relay, since none of the alternatives gives both answering and E2E.
+17. **Native app stack** (owner decision). Default: SwiftUI + Notification Service Extension, iOS 17+ (for CryptoKit HPKE), in a separate `pelhaim-ios` repo.
+18. **Can the phone approve high-risk alerts** (push/PR, security sign-off)? Default: no, view-only from the phone (`allow_high_risk = false`). Face ID to open the app defaults on.
+19. **Notification option buttons:** dynamic notification categories vs answering in-app. Default: a text-reply action plus "Open" on the notification, and the option buttons in the app. Revisit once the M5 prototype runs.
+20. **Claude `--permission-mode auto` semantics in `-p`** (§10.1). Confirm in the M2 spike. Fallback: `acceptEdits` plus `--allowedTools`.
+21. **Codex `exec` network and approval behaviour under `-s workspace-write --approve-for-me`**, and the `-c` keys for approval policy. Confirm in the M2 spike, and don't guess the keys.
 
 ## 15. Risks
 
@@ -1264,7 +1532,7 @@ Each has a default so work isn't blocked.
 | R1 | Claude Code / Codex log formats change (undocumented) | High / high for observe | Tolerant parsers that skip the unknown; `TESTED_VERSIONS` and the "format untested" tick; `doctor`; fixtures per tested version; the adapter is the only place format knowledge lives |
 | R2 | CLI flags or stream protocols drift (`-p` stream-json, `exec --json`) | Medium / high for launch | Verify with `--help` at build and in `doctor`; the M2 spike records real streams; fake-CLI tests pin the expected shape |
 | R3 | The custom renderer eats time: text input, IME, a11y | Medium / medium | Bounded scope (one input widget); egui-for-console fallback (§9.2); scene snapshots keep layout work testable |
-| R4 | Direct-mode tool execution without an OS sandbox | Medium / high | Approval gate defaults to ask; worktree isolation; argv-not-shell; env scrub; no network tool; OS sandbox on the roadmap |
+| R4 | Direct-mode tool execution without an OS sandbox | Medium / high | Now higher, since auto mode allows in-worktree exec without asking (owner, 2026-11-23). Mitigations: the §10.1 classifier sends outside-worktree, network, secrets and destructive work to the owner; worktree isolation; argv-not-shell; env scrub; no network tool; OS sandbox on the roadmap |
 | R5 | Legibility vs the look: matte colours and a pixel font hurt readability | Medium / medium | `high_contrast` palette; tune the palette on the owner's real display; a11y names; state marks |
 | R6 | Two writers on `DECISION-LOG.md` (pelhaim plus the owner's Claude orchestrator) | Medium / medium | Write only on click; re-read and check hash before an atomic rename; backup; refuse and alert on conflict. A single writer becomes possible once pelhaim fully replaces the orchestrator (owner, 2026-11-23). |
 | R7 | Scope: three modes is a lot | High / medium | Strict milestone gates; M1 alone must be worth using daily |
@@ -1277,29 +1545,39 @@ Each has a default so work isn't blocked.
 | R14 | A Launch-mode CLI commits to `main` or pushes on its own, outside pelhaim's mediation | Low / high | Each Launch train's cwd is its worktree on a train branch; CLI permission settings; the owner's global rules; a post-step check that `main` and remotes haven't moved, which raises a red alert |
 | R15 | Stacked branches drift when an upstream station changes after dependants branched | Medium / medium | "Base moved" mark; rebase offered, never automatic; PRs target the predecessor branch |
 | R16 | Weak or missing acceptance checks make "done" mean little | Medium / medium | Checks are run by pelhaim, not the agent; project default check; `Manual` checks force sign-off; plan review shows checks per step |
+| R17 | Auto mode lets an agent do damage inside, or leak out of, its worktree without asking (owner accepted auto mode, 2026-11-23) | Medium / high | Worktree per train, so damage is limited to a discardable branch; the §10.1 classifier sends outside-worktree, network, secrets and destructive work to the owner; Codex's workspace-write sandbox; post-step violation checks; per-project tightening |
+| R18 | The CLIs' auto modes don't behave as assumed | Medium / medium | The M2 spike confirms them before launch mode ships; fallbacks in §10.1; `doctor` re-checks flags |
+| R19 | Keep-awake drains the battery, or fails on battery or with the lid closed | Medium / low | `-s` only applies on AC; the indicator shows the battery caveat; click to pause; release after 60 s idle |
+| R20 | The remote channel becomes an attack path into agent control | Low / high | Outbound-only connections; pairing with a code check; HPKE Auth-mode E2E; signed relay auth; replay protection; the narrow `RemoteApi`; high-risk alerts view-only by default; instant revocation |
+| R21 | Remote costs and operations (the $99/yr Apple account, relay hosting, APNs key handling, app review) | High / low | Flagged as owner decisions; M5 is last and optional; the relay is small and stateless apart from a 24 h queue |
+| R22 | Metadata leakage through the relay and APNs (timing, sizes, device tokens) | Medium / low | Documented in the README; payloads are ciphertext only; no alert text in APNs payloads |
 
 ## 16. Agent's calls the owner should check
 
-**Status: awaiting owner review** (as of 2026-11-23). None of these has been confirmed yet. Items the owner has since ruled on are noted as such and are no longer open.
+**Status: approved by the owner on 2026-11-23**, together with the rest of the design, with the three changes in §5.2. Items 1–19 below are therefore owner-approved agent's calls. They stay listed so a later reader knows which parts started as agent defaults. Items 20 onward were added with §5.2 and are **awaiting owner review**.
 
 These are listed in order of how much they shape the build.
 
-1. The renderer: winit + wgpu + in-house, not macroquad or egui (§9.2). Awaiting owner review.
-2. Engine/adapter split, event-sourced SQLite store (not Postgres), no transcript copies (§6). Awaiting owner review.
-3. Decision log: the SQLite source of truth plus the two-writer export **is now owner-decided** (2026-11-23). Still awaiting review: the on-click mechanics, the hash-checked atomic writer, and automatic decision rows in pelhaim-as-orchestrator (§7.6, §8.5).
-4. Train numbers = departure HHMM (§7.3); one block per tool call, never passing an unfinished station (§7.4). Awaiting owner review.
-5. Cleared-route green is a darker green than the working train (§7.2, §9.1). Awaiting owner review.
-6. The matte palette transform (chroma ×0.6, lightness ×0.88) and its start values (§9.1). Awaiting owner review.
-7. Density cuts: ≤4 visible tracks per line, crossovers only for real merges, idle lines fold (§9.1). Awaiting owner review.
-8. Observe stations = one per owner prompt; heuristics for "probably waiting" and "stalled" (§8.1). Awaiting owner review.
-9. Take over = an explicit detach (magenta), with the adapter swapped to observe (§8.2.4). Awaiting owner review.
-10. One popup at a time, plus a tray; ✕ dismisses to the tray, never deletes (§9.4). Awaiting owner review.
-11. Plan editing via `$EDITOR` TOML first, on-board editing later (§9.6). Awaiting owner review.
-12. Security defaults: approval policy, no OS sandbox in v1, no dangerous flags unless set per project (§10). Worktree per train is now owner-decided (2026-11-23). Awaiting owner review.
-13. Config at `~/.config/pelhaim/config.toml`; data at `~/.local/share/pelhaim/` (§6.5–6.6). Awaiting owner review.
-14. Milestones M1–M4 and their acceptance criteria (§13). Awaiting owner review.
-15. Tag format `pelhaim-project: <slug>` on the first prompt line, and the resolution order; subagents don't inherit a parent's tag (§7.7). Awaiting owner review.
-16. Git mechanics: branch naming, merging a second predecessor into the train branch, PRs targeting the predecessor branch, "base moved" without auto-rebase, the post-step "main moved" check (§7.8). Awaiting owner review.
-17. Checks are run by pelhaim, not the agent; `max_check_attempts = 3`; `Manual` checks force sign-off (§7.9). Awaiting owner review.
-18. `step_complete` as an MCP tool, with final-line JSON as the fallback (§7.9). Awaiting owner review.
-19. Routing-rule enforcement: a required `signoff` field per step, a keyword backstop, and a per-project "park and continue" flag, default off (§8.5). Awaiting owner review.
+1. The renderer: winit + wgpu + in-house, not macroquad or egui (§9.2). Approved 2026-11-23.
+2. Engine/adapter split, event-sourced SQLite store (not Postgres), no transcript copies (§6). Approved 2026-11-23.
+3. Decision log: the SQLite source of truth plus the two-writer export **is now owner-decided** (2026-11-23). Approved 2026-11-23 along with: the on-click mechanics, the hash-checked atomic writer, and automatic decision rows in pelhaim-as-orchestrator (§7.6, §8.5).
+4. Train numbers = departure HHMM (§7.3); one block per tool call, never passing an unfinished station (§7.4). Approved 2026-11-23.
+5. Cleared-route green is a darker green than the working train (§7.2, §9.1). Approved 2026-11-23.
+6. The matte palette transform (chroma ×0.6, lightness ×0.88) and its start values (§9.1). Approved 2026-11-23.
+7. Density cuts: ≤4 visible tracks per line, crossovers only for real merges, idle lines fold (§9.1). Approved 2026-11-23.
+8. Observe stations = one per owner prompt; heuristics for "probably waiting" and "stalled" (§8.1). Approved 2026-11-23.
+9. Take over = an explicit detach (magenta), with the adapter swapped to observe (§8.2.4). Approved 2026-11-23.
+10. One popup at a time, plus a tray; ✕ dismisses to the tray, never deletes (§9.4). Approved 2026-11-23.
+11. Plan editing via `$EDITOR` TOML first, on-board editing later (§9.6). Approved 2026-11-23.
+12. Security defaults: approval policy, no OS sandbox in v1, no dangerous flags unless set per project (§10). Worktree per train is now owner-decided (2026-11-23). Approved 2026-11-23.
+13. Config at `~/.config/pelhaim/config.toml`; data at `~/.local/share/pelhaim/` (§6.5–6.6). Approved 2026-11-23.
+14. Milestones M1–M4 and their acceptance criteria (§13). Approved 2026-11-23.
+15. Tag format `pelhaim-project: <slug>` on the first prompt line, and the resolution order; subagents don't inherit a parent's tag (§7.7). Approved 2026-11-23.
+16. Git mechanics: branch naming, merging a second predecessor into the train branch, PRs targeting the predecessor branch, "base moved" without auto-rebase, the post-step "main moved" check (§7.8). Approved 2026-11-23.
+17. Checks are run by pelhaim, not the agent; `max_check_attempts = 3`; `Manual` checks force sign-off (§7.9). Approved 2026-11-23.
+18. `step_complete` as an MCP tool, with final-line JSON as the fallback (§7.9). Approved 2026-11-23.
+19. Routing-rule enforcement: a required `signoff` field per step, a keyword backstop, and a per-project "park and continue" flag, default off (§8.5). Approved 2026-11-23.
+20. Auto-mode risk classes and defaults, the classifier lists, and loosening some classes drawing a red badge (§10.1). Awaiting owner review.
+21. The CLI mapping: Claude `--permission-mode auto` plus `--disallowedTools` for push and merge; Codex `-s workspace-write --approve-for-me`. Both pending spike confirmation (§10.1). Awaiting owner review.
+22. Keep-awake: `caffeinate -i -m -s -w <pid>` as a child process, not IOKit; no `-d`/`-u` by default; observed trains count; a 60 s release delay; waiting trains hold only when remote is on (§8.6). Awaiting owner review.
+23. Remote design: outbound-only relay, HPKE Auth mode, QR pairing with code confirmation, replay rules, high-risk alerts view-only from the phone, M5 placement (§8.7, §13). Awaiting owner review.
