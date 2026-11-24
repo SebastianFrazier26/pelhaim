@@ -1,5 +1,5 @@
 mod tail;
 mod watch;
 
-pub use tail::{TailRead, Tailer};
+pub use tail::{READ_CAP, TailRead, Tailer};
 pub use watch::{HomeWatcher, WatchSignal};

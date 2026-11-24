@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -11,11 +11,16 @@ pub enum TailRead {
     Gone,
 }
 
+/// Bytes consumed per `read_new` call, so first attach to a large transcript stays bounded;
+/// the rest is picked up by later calls. A first line longer than this is still returned whole.
+pub const READ_CAP: u64 = 4 * 1024 * 1024;
+
 #[derive(Debug)]
 pub struct Tailer {
     path: PathBuf,
     offset: u64,
     identity: Option<(u64, u64)>,
+    read_cap: u64,
 }
 
 impl Tailer {
@@ -24,6 +29,15 @@ impl Tailer {
             path,
             offset: 0,
             identity: None,
+            read_cap: READ_CAP,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn with_read_cap(path: PathBuf, read_cap: u64) -> Tailer {
+        Tailer {
+            read_cap,
+            ..Tailer::new(path)
         }
     }
 
@@ -43,16 +57,23 @@ impl Tailer {
         }
 
         file.seek(SeekFrom::Start(self.offset))?;
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf)?;
-        let Some(last_nl) = buf.iter().rposition(|&b| b == b'\n') else {
-            return Ok(TailRead::Lines(Vec::new()));
-        };
-        self.offset += last_nl as u64 + 1;
-        let lines = buf[..last_nl]
-            .split(|&b| b == b'\n')
-            .map(|line| line.strip_suffix(b"\r").unwrap_or(line).to_vec())
-            .collect();
+        let mut reader = BufReader::new(file);
+        let mut lines = Vec::new();
+        let mut consumed = 0u64;
+        loop {
+            let mut line = Vec::new();
+            let n = reader.read_until(b'\n', &mut line)? as u64;
+            // The first line is always taken, even past the cap, so an oversized line cannot stall.
+            if line.pop() != Some(b'\n') || (!lines.is_empty() && consumed + n > self.read_cap) {
+                break;
+            }
+            consumed += n;
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            lines.push(line);
+        }
+        self.offset += consumed;
         Ok(TailRead::Lines(lines))
     }
 }
