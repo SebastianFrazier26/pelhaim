@@ -698,3 +698,31 @@ fn overlays_come_after_the_board_and_popup_hits_are_on_top() {
     let console = s.hits.iter().position(|(_, h)| *h == Hit::Console).unwrap();
     assert!(first_train < console && console < last);
 }
+
+#[test]
+fn multi_select_question_renders_single_click_rows() {
+    let mut snap = sample_board();
+    let mut kind = question("Pick some");
+    if let AlertKind::Question { questions } = &mut kind {
+        questions[0].multi_select = true;
+    }
+    snap.alerts.push(Alert {
+        answerable: true,
+        ..alert("q:multi", kind, "2026-11-23T14:29:00Z", AlertState::Open)
+    });
+    let view = with_popup("q:multi");
+    let p = plan(&snap, &view);
+    let opts: Vec<_> = p.rows.iter().filter(|r| r.hit.is_some()).collect();
+    assert_eq!(opts.len(), 2);
+    assert!(opts.iter().all(|r| r.text().contains('☐')));
+    let mut b = alert_buttons(&popup_scene(&snap, &view));
+    b.sort_by_key(|b| format!("{b:?}"));
+    assert_eq!(
+        b,
+        [
+            AlertButton::Close,
+            AlertButton::Option(0),
+            AlertButton::Option(1)
+        ]
+    );
+}

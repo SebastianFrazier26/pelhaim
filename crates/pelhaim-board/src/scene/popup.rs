@@ -103,12 +103,11 @@ fn option_row(
     n: usize,
     label: &str,
     desc: &str,
-    checked: bool,
     clickable: Option<AlertButton>,
     highlight: bool,
     p: &Palette,
 ) -> Row {
-    let mut text = format!("[{}] {} {label}", n + 1, if checked { '☑' } else { '☐' });
+    let mut text = format!("[{}] ☐ {label}", n + 1);
     if !desc.is_empty() {
         text.push_str(" — ");
         text.push_str(desc);
@@ -180,7 +179,6 @@ fn content(
                 i,
                 name,
                 "",
-                false,
                 Some(AlertButton::ProjectPick(i)),
                 ps.highlighted == Some(i),
                 p,
@@ -199,18 +197,11 @@ fn content(
                         i,
                         &o.label,
                         &o.description,
-                        ps.checked.contains(&i),
                         clickable(AlertButton::Option(i)),
                         open && ps.highlighted == Some(i),
                         p,
                     ));
                 }
-            }
-            if open && a.answerable && questions.iter().any(|q| q.multi_select) {
-                rows.push(Row {
-                    spans: vec![button("[Send]", p.idle, AlertButton::Send)],
-                    ..Row::plain("", p.label, Flow::Fixed)
-                });
             }
         }
         AlertKind::AssignProject {
@@ -227,7 +218,6 @@ fn content(
                     i,
                     &o.label,
                     "",
-                    false,
                     clickable(AlertButton::Option(i)),
                     open && highlighted == Some(i),
                     p,

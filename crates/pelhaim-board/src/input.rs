@@ -27,7 +27,6 @@ pub struct ViewState {
 pub struct PopupState {
     pub alert: AlertId,
     pub highlighted: Option<usize>,
-    pub checked: BTreeSet<usize>,
     pub picking_project: bool,
 }
 
@@ -36,7 +35,6 @@ impl PopupState {
         PopupState {
             alert,
             highlighted: None,
-            checked: BTreeSet::new(),
             picking_project: false,
         }
     }

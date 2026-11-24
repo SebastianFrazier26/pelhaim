@@ -65,7 +65,6 @@ pub enum Hit {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum AlertButton {
     Option(usize),
-    Send,
     LogDecision,
     Close,
     CopySessionId,
