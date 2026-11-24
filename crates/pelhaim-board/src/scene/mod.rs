@@ -1,12 +1,20 @@
+pub mod console;
+pub mod inset;
+pub mod lamp;
 mod lines;
+pub mod popup;
 mod tags;
+pub mod tray;
 
 use std::collections::BTreeMap;
 
-use pelhaim_core::{AlertId, LineKey, Snapshot, TrackId, Train, TrainId, TrainState};
+use pelhaim_core::{
+    AlertId, AlertKind, LineKey, Snapshot, StationId, TrackId, Train, TrainId, TrainState,
+};
 
 use crate::color::Rgba;
 use crate::display::{DisplayList, P, Prim, R};
+use crate::font::{Cut, advance, draw_text, text_width};
 use crate::input::ViewState;
 use crate::palette::{BlockState, Palette, PaletteKind, block_color, palette};
 use crate::view::View;
@@ -86,7 +94,18 @@ pub fn build_scene(inp: &SceneInput) -> Scene {
         aa: false,
     });
     build_board(&mut out, inp, &layout, &inp.view.view());
+    build_overlays(&mut out, inp, &layout);
     out
+}
+
+/// Screen-space overlays, drawn after (over) the board and never zoomed with it. Hits are
+/// pushed in the same order, so a popup's buttons sit on top of the tray and the board.
+pub fn build_overlays(out: &mut Scene, inp: &SceneInput, layout: &Layout) {
+    tray::draw(out, inp);
+    console::draw(out, inp);
+    inset::draw(out, inp, layout);
+    popup::draw(out, inp, layout);
+    lamp::draw_tooltip(out, inp);
 }
 
 /// The board alone (no background fill), drawn through `v`. The zoom inset calls this with
@@ -196,4 +215,244 @@ fn lerp(a: Rgba, b: Rgba, f: f64) -> Rgba {
         *o = (f64::from(x) + (f64::from(y) - f64::from(x)) * f).round() as u8;
     }
     Rgba(out)
+}
+
+/// Overlay units are screen pixels / `OVERLAY_K`.
+pub const OVERLAY_K: f32 = 1.5;
+
+pub fn overlay_view() -> View {
+    View {
+        k: OVERLAY_K,
+        ox: 0.0,
+        oy: 0.0,
+    }
+}
+
+/// The viewport in overlay units.
+pub fn overlay_size(viewport: (f32, f32)) -> (f32, f32) {
+    (viewport.0 / OVERLAY_K, viewport.1 / OVERLAY_K)
+}
+
+pub(crate) struct Ov<'a> {
+    pub inp: &'a SceneInput<'a>,
+    pub p: Palette,
+    pub v: View,
+    pub w: f32,
+    pub h: f32,
+}
+
+impl<'a> Ov<'a> {
+    pub fn new(inp: &'a SceneInput<'a>) -> Self {
+        let (w, h) = overlay_size(inp.viewport);
+        Ov {
+            inp,
+            p: palette(inp.palette),
+            v: overlay_view(),
+            w,
+            h,
+        }
+    }
+
+    pub fn rect(&self, dl: &mut DisplayList, r: R, color: Rgba) {
+        dl.prims.push(Prim::Rect {
+            r: self.v.rect(r),
+            color,
+            aa: true,
+        });
+    }
+
+    pub fn outline(&self, dl: &mut DisplayList, r: R, t: f32, color: Rgba) {
+        for side in [
+            R { h: t, ..r },
+            R {
+                y: r.y + r.h - t,
+                h: t,
+                ..r
+            },
+            R { w: t, ..r },
+            R {
+                x: r.x + r.w - t,
+                w: t,
+                ..r
+            },
+        ] {
+            self.rect(dl, side, color);
+        }
+    }
+
+    /// Dashes along all four sides, inside `r`.
+    pub fn dashed(&self, dl: &mut DisplayList, r: R, dash: f32, gap: f32, t: f32, color: Rgba) {
+        self.dashed_h(dl, r.x, r.x + r.w, r.y, dash, gap, t, color);
+        self.dashed_h(dl, r.x, r.x + r.w, r.y + r.h - t, dash, gap, t, color);
+        let mut y = r.y + t + gap;
+        while y < r.y + r.h - t - gap {
+            let len = dash.min(r.y + r.h - t - gap - y);
+            for x in [r.x, r.x + r.w - t] {
+                self.rect(dl, R { x, y, w: t, h: len }, color);
+            }
+            y += dash + gap;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn dashed_h(
+        &self,
+        dl: &mut DisplayList,
+        x0: f32,
+        x1: f32,
+        y: f32,
+        dash: f32,
+        gap: f32,
+        t: f32,
+        color: Rgba,
+    ) {
+        let mut x = x0;
+        while x < x1 {
+            let w = dash.min(x1 - x);
+            self.rect(dl, R { x, y, w, h: t }, color);
+            x += dash + gap;
+        }
+    }
+
+    pub fn text(&self, dl: &mut DisplayList, s: &str, x: f32, y: f32, cut: Cut, color: Rgba) {
+        draw_text(dl, &self.v, s, x, y, cut, 1.0, color);
+    }
+
+    /// Draws `s` and returns its padded extent, for a button hit.
+    pub fn button(
+        &self,
+        dl: &mut DisplayList,
+        s: &str,
+        x: f32,
+        y: f32,
+        cut: Cut,
+        color: Rgba,
+    ) -> R {
+        self.text(dl, s, x, y, cut, color);
+        pad(
+            R {
+                x,
+                y,
+                w: text_width(s, cut, 1.0),
+                h: cut_h(cut),
+            },
+            2.0,
+        )
+    }
+
+    pub fn hit(&self, out: &mut Scene, r: R, h: Hit) {
+        out.hits.push((self.v.rect(r), h));
+    }
+
+    pub fn chars_in(&self, w: f32, cut: Cut) -> usize {
+        (w / advance(cut, 1.0)).floor().max(0.0) as usize
+    }
+}
+
+pub(crate) fn cut_h(cut: Cut) -> f32 {
+    match cut {
+        Cut::C5x7 => 7.0,
+        Cut::C7x9 => 9.0,
+    }
+}
+
+pub(crate) fn pad(r: R, d: f32) -> R {
+    R {
+        x: r.x - d,
+        y: r.y - d,
+        w: r.w + 2.0 * d,
+        h: r.h + 2.0 * d,
+    }
+}
+
+pub fn line_name(snap: &Snapshot, key: &LineKey) -> String {
+    if let Some(l) = snap.lines.iter().find(|l| &l.key == key) {
+        return l.name.clone();
+    }
+    match key {
+        LineKey::Dispatch => "Dispatch".into(),
+        LineKey::Unsorted => "Unsorted".into(),
+        LineKey::Project(s) => s.clone(),
+    }
+}
+
+pub fn train_line(snap: &Snapshot, t: &Train) -> String {
+    snap.tracks
+        .get(&t.track)
+        .map_or_else(|| "?".into(), |tr| line_name(snap, &tr.line))
+}
+
+/// The station the train is at (or the last one, once it is past every leg).
+pub fn current_station(snap: &Snapshot, t: &Train) -> Option<StationId> {
+    let st = &snap.tracks.get(&t.track)?.stations;
+    st.get(usize::from(t.position.leg)).or(st.last()).copied()
+}
+
+pub fn station_title(snap: &Snapshot, t: &Train) -> Option<String> {
+    current_station(snap, t).and_then(|id| snap.stations.get(&id).map(|s| s.title.clone()))
+}
+
+/// The words for a train's state, so state is never colour-only. Shared by the inset and
+/// the a11y names (F37).
+pub fn state_words(t: &Train, snap: &Snapshot) -> String {
+    match &t.state {
+        TrainState::Working => "working".into(),
+        TrainState::Idle => "idle".into(),
+        TrainState::Waiting(id) => {
+            let q = snap
+                .alerts
+                .iter()
+                .find(|a| &a.id == id)
+                .and_then(|a| match &a.kind {
+                    AlertKind::Question { questions } => {
+                        questions.first().map(|q| q.question.clone())
+                    }
+                    _ => None,
+                });
+            match q {
+                Some(q) => format!("waiting on you: {q}"),
+                None => "waiting on you".into(),
+            }
+        }
+        TrainState::ProbablyWaiting => "probably waiting on you in the terminal".into(),
+        TrainState::Failed(r) => format!("failed: {r}"),
+        TrainState::Done => "done".into(),
+        TrainState::Stalled => "stalled".into(),
+    }
+}
+
+/// Word wrap at `width` chars. A word wider than the line is broken by chars (F35): CJK and
+/// long tokens have no spaces to break at.
+pub fn wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    for para in text.lines() {
+        let para = pelhaim_core::sanitize_line(para);
+        if para.is_empty() {
+            continue;
+        }
+        let mut line = String::new();
+        let mut n = 0;
+        for word in para.split(' ') {
+            let mut chars: Vec<char> = word.chars().collect();
+            if n > 0 && n + 1 + chars.len() <= width {
+                line.push(' ');
+                line.extend(&chars);
+                n += 1 + chars.len();
+                continue;
+            }
+            if n > 0 {
+                out.push(std::mem::take(&mut line));
+            }
+            while chars.len() > width {
+                out.push(chars.drain(..width).collect());
+            }
+            line.extend(&chars);
+            n = chars.len();
+        }
+        if n > 0 {
+            out.push(line);
+        }
+    }
+    out
 }

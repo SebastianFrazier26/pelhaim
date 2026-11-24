@@ -1,0 +1,44 @@
+---
+source: crates/pelhaim-board/tests/scene_overlays.rs
+expression: "(cr, lines, hits)"
+---
+(R(
+  x: 372.0,
+  y: 237.0,
+  w: 530.72,
+  h: 426.0,
+), [
+  "1423 · SAFEASCENT",
+  "Claude session",
+  "waiting on you: Proceed to C1?",
+  "cwd /Users/me/Developer/safeascent",
+  "session S1",
+  "▸ Stage C1 rehearsal",
+  "tail line 4",
+  "tail line 5",
+  "tail line 6",
+  "tail line 7",
+  "tail line 8",
+  "tail line 9",
+  "tail line 10",
+  "tail line 11",
+], [
+  (R(
+    x: 1205.5,
+    y: 238.5,
+    w: 18.0,
+    h: 19.5,
+  ), "InsetAction(Close)"),
+  (R(
+    x: 911.72,
+    y: 642.0,
+    w: 96.0,
+    h: 16.5,
+  ), "InsetAction(OpenCwd)"),
+  (R(
+    x: 1013.72,
+    y: 642.0,
+    w: 159.0,
+    h: 16.5,
+  ), "InsetAction(CopySessionId)"),
+])

@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 pelhaim-core = { path = "../pelhaim-core" }
 serde = { version = "1.0.229", features = ["derive"] }
+unicode-segmentation = "1.13.3"
 
 [dev-dependencies]
 insta = { version = "1.49.0", features = ["ron"] }
