@@ -150,7 +150,7 @@ fn doctor_reports_versions_and_never_values() {
     let out = rig.run(&["doctor"]);
     let text = stdout(&out);
     assert!(out.status.success(), "{text}\n{}", stderr(&out));
-    assert!(text.contains("claude: 2.1.331 (tested 2.1.331)"), "{text}");
+    assert!(text.contains("claude: 2.1.331 (tested 2.1.332)"), "{text}");
     assert!(text.contains("codex: 0.158.0 (tested 0.162.1)"), "{text}");
     assert!(text.contains("format untested: S3\n"), "{text}");
     assert!(text.contains("config: "), "{text}");

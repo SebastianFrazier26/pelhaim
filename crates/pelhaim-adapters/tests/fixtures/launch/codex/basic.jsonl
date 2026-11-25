@@ -1,0 +1,12 @@
+{"type":"thread.started","thread_id":"00000000-0000-4000-8000-000000000001"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"<text>"}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"<text>"}}
+{"type":"item.started","item":{"id":"item_2","type":"command_execution","command":"/bin/zsh -lc 'pwd && git status --short && rg --files -g AGENTS.md -g src/lib.rs -g Cargo.toml -g CHANGELOG.md && cat src/lib.rs'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"/bin/zsh -lc 'pwd && git status --short && rg --files -g AGENTS.md -g src/lib.rs -g Cargo.toml -g CHANGELOG.md && cat src/lib.rs'","aggregated_output":"<text>","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_3","type":"file_change","changes":[{"path":"/tmp/pelhaim-w/src/lib.rs","kind":"update"}],"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_3","type":"file_change","changes":[{"path":"/tmp/pelhaim-w/src/lib.rs","kind":"update"}],"status":"completed"}}
+{"type":"item.started","item":{"id":"item_4","type":"command_execution","command":"/bin/zsh -lc '$HOME/.cargo/bin/cargo test'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_4","type":"command_execution","command":"/bin/zsh -lc '$HOME/.cargo/bin/cargo test'","aggregated_output":"<text>","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_5","type":"agent_message","text":"<text>"}}
+{"type":"turn.completed"}

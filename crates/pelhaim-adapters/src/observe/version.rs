@@ -1,4 +1,4 @@
-pub const CLAUDE_TESTED: &[&str] = &["2.1.331"];
+pub const CLAUDE_TESTED: &[&str] = &["2.1.331", "2.1.332"];
 pub const CODEX_TESTED: &[&str] = &["0.158.0", "0.162.1"];
 
 fn parse(version: &str) -> Option<Vec<u64>> {

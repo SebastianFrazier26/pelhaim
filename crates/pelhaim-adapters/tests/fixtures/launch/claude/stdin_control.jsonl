@@ -1,0 +1,4 @@
+{"type":"control_response","response":{"subtype":"success","request_id":"00000000-0000-4000-9000-000000000101","response":{"behavior":"allow","updatedInput":{"command":"curl -sI https://example.com","description":"<text>"}}}}
+{"type":"control_response","response":{"subtype":"success","request_id":"00000000-0000-4000-9000-000000000102","response":{"behavior":"deny","message":"denied by probe host"}}}
+{"type":"control_response","response":{"subtype":"success","request_id":"00000000-0000-4000-9000-000000000103","response":{"behavior":"allow","updatedInput":{"questions":[{"question":"Should the new helper be named `sub` or `minus`?","header":"Helper name","multiSelect":false,"options":[{"label":"sub","description":"<text>"},{"label":"minus","description":"<text>"}]}],"answers":{"Should the new helper be named `sub` or `minus`?":"sub"}}}}}
+{"type":"control_request","request_id":"int-1","request":{"subtype":"interrupt"}}

@@ -1,0 +1,1 @@
+{"mcpServers":{"pelhaim":{"type":"stdio","command":"/tmp/pelhaim-w/bin/pelhaim","args":["mcp-step","--station","s1"]}}}

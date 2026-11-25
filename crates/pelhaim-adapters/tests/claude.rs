@@ -667,7 +667,8 @@ fn untested_version_flagged() {
     assert!(is_untested("garbage", CLAUDE_TESTED));
     assert!(!is_untested("2.1.330", CLAUDE_TESTED));
     assert!(!is_untested("2.1", CLAUDE_TESTED));
-    assert!(is_untested("2.1.331.1", CLAUDE_TESTED));
+    assert!(!is_untested("2.1.332", CLAUDE_TESTED));
+    assert!(is_untested("2.1.332.1", CLAUDE_TESTED));
     assert!(is_untested("2.10.0", CLAUDE_TESTED));
     assert!(is_untested("2.1.331-beta", CLAUDE_TESTED));
     assert!(is_untested("", CLAUDE_TESTED));

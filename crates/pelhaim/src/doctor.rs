@@ -197,6 +197,6 @@ mod tests {
     fn highest_tested_version() {
         assert_eq!(highest(CODEX_TESTED), "0.162.1");
         assert_eq!(highest(&["0.162.1", "0.158.0"]), "0.162.1");
-        assert_eq!(highest(CLAUDE_TESTED), "2.1.331");
+        assert_eq!(highest(CLAUDE_TESTED), "2.1.332");
     }
 }
