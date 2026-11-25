@@ -141,7 +141,7 @@ fn assign_moves_train_and_later_untagged_subagents_only() {
 
 #[test]
 fn assign_never_overrides_tagged_subagent() {
-    let mut e = engine(&["ethica", "cabn"]);
+    let mut e = engine_tags_only(&["ethica", "cabn"]);
     let p = key("U1");
     let c = SessionKey::claude_sub("U1", "a1");
     let m = SessionKey::claude_sub("U1", "a2");

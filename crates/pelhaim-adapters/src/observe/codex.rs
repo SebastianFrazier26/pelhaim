@@ -142,6 +142,7 @@ impl CodexFileParser {
             parent: None,
             path: self.path.clone(),
             cwd: str_at(payload, &["cwd"]).map(str::to_string),
+            repo: None,
             version: version.clone(),
             started: str_at(payload, &["timestamp"])
                 .and_then(|s| s.parse::<Ts>().ok())

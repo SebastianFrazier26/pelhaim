@@ -189,7 +189,7 @@ A working train's planned route ahead also lights green, as a cleared route.
 
 A builder check on the first draft raised four questions that only the owner could answer. The answers below are **[Owner], 2026-11-23**. Where they conflict with anything elsewhere in this doc, these win; the sections named have been updated to match.
 
-1. **Observed work is assigned to lines by explicit tags, not by cwd.**
+1. **Observed work is assigned to lines by explicit tags, not by cwd.** *Partly reversed 2026-11-24 (§7.7): tags still win, but an untagged session now goes to the line of the git repository its cwd lies in.*
    - The owner's orchestrator runs from `~`, and its subagents record `cwd=~/Developer`, so matching on cwd fails.
    - The orchestrator labels each agent it starts. Untagged work goes to an "Unsorted" line, whose alert offers a one-click "assign to project", remembered per session.
    - The orchestrator session itself appears as a **DISPATCH** line. Its tagged subagent trains branch off it onto their project lines. *Superseded 2026-11-24 by §5.3: DISPATCH is a one-row count strip and the orchestrator draws no train.*
@@ -382,7 +382,7 @@ stall_after = "10m"                   # no writes + not at a turn end → "stall
 [[project]]
 slug = "safeascent"                   # matches `pelhaim-project: safeascent` tags (§7.7)
 name = "SafeAscent"                   # the line label
-path = "~/Developer/safeascent"       # repo root: worktrees branch from here; NOT used to assign observed sessions
+path = "~/Developer/safeascent"       # repo root: worktrees branch from here; an untagged session in this repo lands here (§7.7)
 repo = "SebastianFrazier26/safeascent" # optional, for links and PRs
 order = 1
 
@@ -445,6 +445,7 @@ palette = "matte"                     # matte | film | high_contrast
 motion = "full"                       # full | reduced
 float_alert_lines = true              # lines with open alerts float up
 max_stations = 5                      # stations shown per track, 1–20; older fold into "+N earlier" (§7.10)
+auto_projects = true                  # untagged sessions go to their cwd's repo line; unknown repos and tags get lines (§7.7)
 ```
 
 ### 6.7 CLI surface
@@ -622,6 +623,8 @@ So a train's motion means activity, never invented progress.
 
 **[Owner], 2026-11-23:** observed work is assigned to lines by explicit tags, never by cwd. The tag format is the **[Agent's call]**.
 
+**[Owner], 2026-11-24 — reversal, in part:** "the trains are currently asking which project they're for instead of auto-registering them based on the worktree." Sessions now auto-register to a project from where they run. Explicit tags stay and take priority; the cwd's repository is the fallback before Unsorted. This reverses the 2026-11-23 rule above for untagged sessions only. The mechanics below the owner's rule are the **[Agent's call]**.
+
 **Format**
 
 - The first line of an agent's spawn prompt is exactly:
@@ -639,9 +642,22 @@ So a train's motion means activity, never invented progress.
   | Codex | The first line of the prompt passed to `codex exec`, read from the first user `response_item:message` in the rollout. |
   | Any session tagging itself | The first line of the session's first real user message (not meta, not a tool result). |
 
-- **Resolution order:** an explicit owner assignment from the UI, then the subagent's spawn-prompt tag, then the session's self-tag, then Unsorted.
-  - A subagent with no tag of its own inherits nothing: it goes to Unsorted. This keeps mistakes visible. **[Agent's call]**
-- **Mis-tagged:** a well-formed tag whose slug is not in config. The train goes to Unsorted with a red-outlined tag label showing the unknown slug, and the assign alert pre-fills the closest slug by edit distance.
+- **Resolution order (2026-11-24):**
+  1. An explicit owner assignment from the UI. A project assignment also covers the session's later untagged subagents, as before.
+  2. The subagent's spawn-prompt tag.
+  3. The session's self-tag. A session listed in `[dispatch].sessions` goes to DISPATCH whatever its tag.
+  4. **The session's repository.** The recorded cwd (Claude JSONL `cwd`; Codex `session_meta.payload.cwd`) is canonicalised (symlinks resolved) and walked up to the nearest `.git`:
+     - a `.git` directory: that directory is the repository;
+     - a `.git` file (a linked worktree, `gitdir: …/.git/worktrees/<name>`): `<gitdir>/commondir` leads to the main repository's git dir, whose parent is the repository. A bare `<name>.git` git dir is its own root, named without `.git`. A `.git` file with no `commondir` (a submodule) or that is not a pointer names its own checkout.
+     - The project is the main repository's directory name, slugged (ASCII lowercased, each run of other characters one `-`, trimmed): `~/Developer/SafeAscent-r7v2`, a worktree of `~/Developer/SafeAscent`, gives `safeascent`.
+     - It matches a `[[project]]` whose `path` (tilde-expanded, canonical) is the repository root, else one whose `slug` is the repository slug. If none matches, a line is **auto-created** for it, named after the repository directory, so the board works with no config.
+     - Only read-only file reads (`fs::canonicalize`, `fs::metadata`, `File::open` of `.git` and `commondir`, at most 4 KiB each). No git process runs and nothing is written; the read-only proof tests cover it. The observer caches the result per cwd for the run.
+  5. Unsorted, which now means no usable tag **and** no repository: for example the orchestrator's subagents working from `~/Developer` itself.
+  - A subagent with no tag of its own inherits no tag: it is placed by its own cwd's repository, else Unsorted. It never inherits DISPATCH. **[Agent's call]**
+  - An `AssignProject` alert is raised only for a session that ends up on Unsorted. A session that moves off Unsorted (for example when its cwd arrives after discovery) has its open Assign alert expired.
+- **Auto-created lines (2026-11-24, [Agent's call]):** with `auto_projects` on, a well-formed tag whose slug is not in config also gets its own line, named by the slug; a repository with the same slug later renames it to the repository's spelling. Configured lines always show, in `order`; auto lines follow, by slug, and show only while a track is on them. They are offered as Assign options. A decision logged on an auto line has no `log_section`, so its export fails visibly with a Failure alert until the project is added to config.
+- **`[board].auto_projects`** (default `true`) turns all of step 4 and auto-created lines off, restoring the 2026-11-23 behaviour: tags only.
+- **Mis-tagged:** with `auto_projects = false` only, a well-formed tag whose slug is not in config. The train goes to Unsorted with a red-outlined tag label showing the unknown slug, and the assign alert pre-fills the closest slug by edit distance.
 
 **Lines**
 
@@ -649,7 +665,7 @@ So a train's motion means activity, never invented progress.
   - **[Owner], 2026-11-24 (§5.3):** DISPATCH is a one-row header strip, `DISPATCH · N agents running`, and the orchestrator draws no train, track, stations or forks. N counts the active (not idle, done, stalled or failed) trains with an orchestrator among their ancestors, so a subagent's own subagents count too. The count turns yellow while an orchestrator has an open alert.
   - Each tagged subagent spawned from a DISPATCH session runs on its project's line as its own track, starting at the line's left edge; no fork is drawn back to DISPATCH. The orchestrator's questions still raise popups and tray entries.
   - *Before 2026-11-24:* each such subagent left the DISPATCH track on a diverging track that crossed down onto its project's line.
-- **Unsorted line:** the bottom band. Each untagged session or agent raises an `AssignProject` alert listing the configured projects as one-click options.
+- **Unsorted line:** the bottom band. Each session on it (no tag and no repository) raises an `AssignProject` alert listing the projects as one-click options.
   - The answer is stored in SQLite per session id (and per subagent id), and survives restarts. It moves the train and every later subagent of that session.
 - **The orchestrator side:** the owner's orchestrator must be told to prefix each spawn prompt with the tag. That is a one-line addition to the owner's global `CLAUDE.md` delegation rules, in the setup repo. pelhaim's own Launch and Direct modes always write the tag themselves.
 
@@ -763,9 +779,9 @@ The adapter is `observe::claude` or `observe::codex`. Its capabilities are `read
 
 **Claude Code** (`<claude_home>/projects/<cwd-slug>/<sessionId>.jsonl`)
 
-- **Project:** by explicit tag, per §7.7. **[Owner], 2026-11-23.**
-  - The first draft matched the recorded `cwd` against project paths. That is dropped: the owner's orchestrator runs from `~` and its subagents record `cwd=~/Developer`, so cwd says nothing about the project.
-  - `cwd` is still read and shown in the inset, and is used only to find the session's files.
+- **Project:** by explicit tag, then by the cwd's git repository, per §7.7. **[Owner], 2026-11-23; reversed in part 2026-11-24.**
+  - The first draft matched the recorded `cwd` against project paths. That was dropped on 2026-11-23, and restored on 2026-11-24 as the fallback after tags: the cwd is resolved to its main repository (§7.7 step 4). A cwd of `~/Developer`, which is not a repository, still says nothing about the project.
+  - `cwd` is also shown in the inset.
 - **History order:** follow `parentUuid` chains, not line order. Parallel tool calls branch the chain (`claude.py::_chain` and `_splice`).
   - For board purposes, a simpler rule is enough: count records by type and track open tool calls by id.
   - The full chain walk matters only if pelhaim ever reconstructs text. It shouldn't need to.
@@ -1455,7 +1471,7 @@ All of §10 is **[Agent's call]**, from the owner's norms. The owner should look
 | Layer | How | What |
 |---|---|---|
 | `pelhaim-core` | Plain unit tests and `proptest` | Reducer: fixture event sequences lead to expected state. Plan validation: cycles, missing deps, duplicates. Path cover and layering. Train movement rules: never passes an unfinished station. Train numbering collisions. |
-| Adapters, observe | Synthetic fixture homes under `tests/fixtures/{claude,codex}/…` written by hand to match today's shapes, **never real logs** | Parsing every record type listed in §8.1; partial last line; invalid JSON lines; subagent meta linking; `AskUserQuestion` open/close; stall and permission heuristics on a fake clock; the read-only assertion. **Project tags (§7.7), each for Claude subagent, Claude self-tag and Codex:** tagged (lands on its line); untagged (Unsorted + AssignProject alert); mis-tagged (unknown slug, malformed key such as `Pelhaim-Project:`, tag on line 2, tag inside a code fence); a DISPATCH session with tagged subagents branching to two different lines; a cwd of `~/Developer` that must *not* influence the line; an owner assignment surviving a restart. |
+| Adapters, observe | Synthetic fixture homes under `tests/fixtures/{claude,codex}/…` written by hand to match today's shapes, **never real logs** | Parsing every record type listed in §8.1; partial last line; invalid JSON lines; subagent meta linking; `AskUserQuestion` open/close; stall and permission heuristics on a fake clock; the read-only assertion. **Project tags (§7.7), each for Claude subagent, Claude self-tag and Codex:** tagged (lands on its line); untagged (Unsorted + AssignProject alert); mis-tagged (unknown slug, malformed key such as `Pelhaim-Project:`, tag on line 2, tag inside a code fence); a DISPATCH session with tagged subagents branching to two different lines; a cwd of `~/Developer` that must *not* influence the line; an owner assignment surviving a restart. **Repositories (§7.7 step 4, 2026-11-24), on synthetic temp trees:** a plain repo; a linked worktree resolving to the main repo's name; nested repos; no repo (Unsorted); a tag overriding the repo; auto-created lines; a configured `path` match; a symlinked cwd; and the read-only proof over the repo tree. |
 | Adapters, launch | Fake `claude` and `codex` executables (small Rust test binaries) placed first on `PATH`, replaying recorded stream lines, reading stdin, and exiting with set codes | Spawn args are exactly what §8.2 says, including the tag line and the worktree cwd; answer routing; exit-code handling; take-over handoff; `step_complete` via MCP tool and via final-line JSON; look-alike JSON in a code fence ignored; a turn ending without the signal. Fixture streams come from the M2 spike recordings, scrubbed. |
 | Git flow | Throwaway repos built in temp dirs with `git` | Worktree + branch per train; a dependant branches off its predecessor's branch; a two-predecessor merge, clean and conflicting (red X + alert); no code path can commit to or merge into `main`; push and PR are only reachable through an approved `GitApproval`; "main moved" detection. |
 | Done / sign-off | Engine plus fake checks | Declare → Checking → Done; a failing check returns to Active, then Failed after `max_check_attempts`; flagged steps stop at AwaitingSignoff and don't release dependants; reject-with-note; plan validation rejects design/security steps without flags. |

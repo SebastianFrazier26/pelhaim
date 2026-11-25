@@ -27,6 +27,7 @@ pub fn cfg(slugs: &[&str]) -> EngineConfig {
                 slug: s.to_string(),
                 name: s.to_uppercase(),
                 order: i as i32,
+                path: None,
             })
             .collect(),
         ..EngineConfig::default()
@@ -37,6 +38,15 @@ pub fn engine(slugs: &[&str]) -> Engine {
     Engine::new(cfg(slugs), RestoredState::default())
 }
 
+/// `auto_projects` off: tags only, as before 2026-11-24, so mis-tags exist.
+pub fn engine_tags_only(slugs: &[&str]) -> Engine {
+    let cfg = EngineConfig {
+        auto_projects: false,
+        ..cfg(slugs)
+    };
+    Engine::new(cfg, RestoredState::default())
+}
+
 /// A Claude main session with session id `key`.
 pub fn discover(key: &str, at: &str) -> Input {
     Input::Event(Event::SessionDiscovered {
@@ -45,6 +55,7 @@ pub fn discover(key: &str, at: &str) -> Input {
         parent: None,
         path: PathBuf::from(format!("/fixtures/claude/{key}.jsonl")),
         cwd: None,
+        repo: None,
         version: None,
         started: ts(at),
     })
@@ -66,6 +77,7 @@ pub fn discover_in(e: &mut Engine, key: &SessionKey, parent: Option<&SessionKey>
         parent: parent.cloned(),
         path: PathBuf::from(format!("/fixtures/{}.jsonl", key.0)),
         cwd: None,
+        repo: None,
         version: None,
         started: at,
     }));

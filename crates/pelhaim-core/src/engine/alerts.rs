@@ -181,12 +181,12 @@ impl Engine {
 
     fn assign_kind(&self, key: &SessionKey, mis_tag: Option<&str>) -> AlertKind {
         let projects = self.projects_in_order();
-        let slugs: Vec<String> = projects.iter().map(|p| p.slug.clone()).collect();
+        let slugs: Vec<String> = projects.iter().map(|(s, _)| s.clone()).collect();
         let mut options: Vec<AssignOption> = projects
-            .iter()
-            .map(|p| AssignOption {
-                label: p.name.clone(),
-                target: AssignTarget::Project(p.slug.clone()),
+            .into_iter()
+            .map(|(slug, name)| AssignOption {
+                label: name,
+                target: AssignTarget::Project(slug),
             })
             .collect();
         options.push(AssignOption {

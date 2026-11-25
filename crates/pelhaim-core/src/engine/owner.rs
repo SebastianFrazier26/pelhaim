@@ -334,7 +334,7 @@ impl Engine {
     pub(super) fn decision_export_failed(&mut self, id: DecisionId, reason: String) -> bool {
         let decision = self.decisions.iter().find(|d| d.id == id);
         let line = decision
-            .filter(|d| self.cfg.projects.iter().any(|p| p.slug == d.project))
+            .filter(|d| self.configured(&d.project) || self.auto_lines.contains_key(&d.project))
             .map_or(LineKey::Unsorted, |d| LineKey::Project(d.project.clone()));
         let train = decision
             .and_then(|d| d.source_alert.as_ref())

@@ -4,14 +4,14 @@ use std::path::PathBuf;
 use super::alerts::child_active;
 use super::eta::correction_factor;
 use super::{Effect, Engine, OwnerEvent};
-use crate::event::{Event, Tool, Ts};
+use crate::event::{Event, RepoRef, Tool, Ts};
 use crate::ids::{SessionKey, TrainId};
 use crate::model::{
     AssignTarget, Counters, Fork, LEG_BLOCKS, LineKey, Position, RuntimeRef, Station,
     StationStatus, StationTiming, TagResolution, Track, Train, TrainState,
 };
 use crate::number::train_number;
-use crate::tag::{DISPATCH_SLUG, TagParse};
+use crate::tag::{DISPATCH_SLUG, TagParse, slugify};
 
 const TAIL_MAX: usize = 20;
 
@@ -22,6 +22,7 @@ pub(super) struct SessionMeta {
     description: Option<String>,
     self_tag: Option<TagParse>,
     spawn_tag: Option<TagParse>,
+    repo: Option<RepoRef>,
     /// Every milestone name seen on this track, folded ones included.
     milestones: BTreeSet<String>,
 }
@@ -40,6 +41,7 @@ struct Discovered {
     parent: Option<SessionKey>,
     path: PathBuf,
     cwd: Option<String>,
+    repo: Option<RepoRef>,
     started: Ts,
 }
 
@@ -59,6 +61,7 @@ impl Engine {
             parent,
             path,
             cwd,
+            repo,
             started,
             ..
         } = e
@@ -69,6 +72,7 @@ impl Engine {
                 parent,
                 path,
                 cwd,
+                repo,
                 started,
             });
         }
@@ -329,6 +333,10 @@ impl Engine {
     fn discover(&mut self, d: Discovered) -> bool {
         if let Some(&id) = self.by_key.get(&d.key) {
             self.train_mut(id).cwd = d.cwd;
+            if self.meta[&d.key].repo != d.repo {
+                self.meta_mut(&d.key).repo = d.repo;
+                self.resolve(&d.key);
+            }
             return true;
         }
         let id = self.ids.train();
@@ -397,6 +405,7 @@ impl Engine {
                 description: None,
                 self_tag: None,
                 spawn_tag: None,
+                repo: d.repo,
                 milestones: BTreeSet::new(),
             },
         );
@@ -636,6 +645,25 @@ impl Engine {
 
     pub(super) fn resolve(&mut self, key: &SessionKey) {
         let (tag, line) = self.resolution(key);
+        if let LineKey::Project(slug) = &line
+            && !self.configured(slug)
+        {
+            // A repository's own spelling beats a bare slug as the line's name.
+            let repo_name = self.meta[key]
+                .repo
+                .as_ref()
+                .filter(|r| slugify(&r.name).as_ref() == Some(slug))
+                .map(|r| r.name.clone());
+            let name = self
+                .auto_lines
+                .entry(slug.clone())
+                .or_insert_with(|| slug.clone());
+            if let Some(n) = repo_name
+                && name == slug
+            {
+                *name = n;
+            }
+        }
         let id = self.by_key[key];
         let t = self.train_mut(id);
         t.tag = tag;
@@ -644,12 +672,33 @@ impl Engine {
         self.sync_assign_alert(key);
     }
 
+    pub(super) fn configured(&self, slug: &str) -> bool {
+        self.cfg.projects.iter().any(|p| p.slug == slug)
+    }
+
+    /// A line exists, or may be created, for this slug.
+    pub(super) fn has_line(&self, slug: &str) -> bool {
+        self.cfg.auto_projects || self.configured(slug) || self.auto_lines.contains_key(slug)
+    }
+
+    /// §7.7 step 4: the project whose configured `path` is the repository
+    /// root, else the repository name's slug, configured or a new line.
+    fn repo_line(&self, repo: &RepoRef) -> Option<String> {
+        self.cfg
+            .projects
+            .iter()
+            .find(|p| p.path.as_deref() == Some(repo.root.as_path()))
+            .map(|p| p.slug.clone())
+            .or_else(|| slugify(&repo.name))
+    }
+
+    /// §7.7: owner assignment, spawn tag, self tag, the cwd's repository, Unsorted.
     fn resolution(&self, key: &SessionKey) -> (TagResolution, LineKey) {
-        let configured = |slug: &str| self.cfg.projects.iter().any(|p| p.slug == slug);
+        let known = |slug: &str| self.has_line(slug);
         let assigned = |target: &AssignTarget| {
             let line = match target {
                 AssignTarget::Dispatch => LineKey::Dispatch,
-                AssignTarget::Project(s) if configured(s) => LineKey::Project(s.clone()),
+                AssignTarget::Project(s) if known(s) => LineKey::Project(s.clone()),
                 AssignTarget::Project(_) => LineKey::Unsorted,
             };
             (TagResolution::Assigned(target.clone()), line)
@@ -663,7 +712,7 @@ impl Engine {
             _ => None,
         };
         let tag = match tagged(&meta.spawn_tag).or_else(|| tagged(&meta.self_tag)) {
-            Some(s) if s == DISPATCH_SLUG || configured(&s) => TagResolution::Tagged(s),
+            Some(s) if s == DISPATCH_SLUG || known(&s) => TagResolution::Tagged(s),
             Some(s) => TagResolution::MisTagged(s),
             None => TagResolution::Untagged,
         };
@@ -685,6 +734,14 @@ impl Engine {
             TagResolution::Tagged(s) => LineKey::Project(s.clone()),
             _ => LineKey::Unsorted,
         };
+        // A mis-tag exists only with `auto_projects` off, which also turns this off.
+        if tag == TagResolution::Untagged
+            && line == LineKey::Unsorted
+            && self.cfg.auto_projects
+            && let Some(slug) = meta.repo.as_ref().and_then(|r| self.repo_line(r))
+        {
+            return (TagResolution::Repo(slug.clone()), LineKey::Project(slug));
+        }
         (tag, line)
     }
 

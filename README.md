@@ -18,7 +18,7 @@ This build ships **Observe only**.
 
 ## What the board shows
 
-- **Lines** are projects from your config, in `order`. **DISPATCH** is always the top row: a one-line strip, `DISPATCH · 6 agents running`, counting the agents your orchestrator has running. The orchestrator itself draws no train, but its questions still pop up. **UNSORTED** is the bottom band and holds sessions pelhaim cannot place.
+- **Lines** are projects from your config, in `order`, then lines pelhaim made for repositories and tags it found. **DISPATCH** is always the top row: a one-line strip, `DISPATCH · 6 agents running`, counting the agents your orchestrator has running. The orchestrator itself draws no train, but its questions still pop up. **UNSORTED** is the bottom band and holds sessions pelhaim cannot place.
 - **Trains** are sessions (Claude Code sessions and subagents, Codex rollouts). An orchestrator's subagents appear on their own project lines. A train steps one block per tool call, on a track of bounded length.
 - **Stations** are milestones the agent reports with a marker line (see below). Prompts never make stations. At most `max_stations` show per track (default 5); older ones fold into `+N earlier`. The station a train is running to shows its arrival clock, `ARR 14:52`, which turns amber when overdue.
 
@@ -34,17 +34,21 @@ Colour legend (default `matte` palette):
 | grey `#85889A` | done |
 | pale teal `#99B5B7` | idle |
 
-A red outline on a train's tag means a mis-tag (a slug not in your config). A small yellow badge on a line label counts that project's open decisions in `DECISION-LOG.md`; a ⚠ tick means a session was written by a CLI version newer than the tested ones (`pelhaim doctor` lists them).
+A red outline on a train's tag means a mis-tag (a slug not in your config, with `auto_projects = false`). A small yellow badge on a line label counts that project's open decisions in `DECISION-LOG.md`; a ⚠ tick means a session was written by a CLI version newer than the tested ones (`pelhaim doctor` lists them).
 
 ## Tags: putting work on the right line
 
-pelhaim never guesses a line from the working directory. The first line of a session's first prompt, or of a subagent's spawn prompt, must be exactly:
+A session lands on a line by, in order: your Assign answer, its tag, then the git repository it runs in. Tag a session with the first line of its first prompt, or of a subagent's spawn prompt, set to exactly:
 
 ```
 pelhaim-project: <slug>
 ```
 
-`<slug>` is `[a-z0-9-]+` and must match a `[[project]].slug`. The reserved slug `dispatch` marks an orchestrator and puts it on DISPATCH (or list its session id under `[dispatch].sessions`). An untagged session goes to UNSORTED with an Assign alert listing your projects; your answer is stored and survives restarts. Tell your orchestrator to prefix every spawn prompt with the tag.
+`<slug>` is `[a-z0-9-]+`. The reserved slug `dispatch` marks an orchestrator and puts it on DISPATCH (or list its session id under `[dispatch].sessions`).
+
+An untagged session goes to the line of the repository its working directory is in, found by reading `.git` (no git command runs). A linked worktree counts as its main repository, so `~/Developer/SafeAscent-r7v2` lands on `safeascent`. The repository matches a `[[project]]` by `path` or by `slug`; with no match, pelhaim draws a line for it named after the repository, and does the same for a tag whose slug is not configured. So the board works with no config at all.
+
+Only a session with no tag and no repository (say, one running in `~/Developer` itself) goes to UNSORTED, with an Assign alert listing your projects; your answer is stored and survives restarts. Set `[board].auto_projects = false` to place by tags only; then a tag must match a `[[project]].slug`, or it shows as a mis-tag.
 
 ## Milestones: stations and arrival times
 
@@ -74,6 +78,7 @@ permission_after = "20s"
 [[project]]
 slug = "safeascent"
 name = "SafeAscent"
+path = "~/Developer/SafeAscent" # optional: sessions in this repo land here
 order = 1
 log_section = "SafeAscent" # heading in DECISION-LOG.md, default: name
 
@@ -93,6 +98,7 @@ write = "on_click"         # on_click | off
 palette = "matte"          # matte | film | high_contrast
 motion = "full"            # full | reduced
 max_stations = 5           # stations shown per track (1–20)
+auto_projects = true       # place untagged sessions by their repo; draw lines for unknown repos and tags
 ```
 
 Sections for later milestones (`[launch]`, `[direct]`, `[approval]`, `[project_overrides]`, `[git]`) are rejected with the milestone that brings them.

@@ -72,3 +72,4 @@ palette = "high_contrast"
 motion = "reduced"
 float_alert_lines = false
 max_stations = 3
+auto_projects = false

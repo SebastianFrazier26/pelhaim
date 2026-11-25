@@ -5,10 +5,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use common::{Running, live_home, opts, run_once};
+use common::{Running, live_home, opts, repo_tree, run_once};
 use pelhaim_adapters::observe::{ObserveClaude, ObserveCodex, ObserveOptions};
 use pelhaim_adapters::{AdapterCommand, AdapterKind, Capabilities, SessionAdapter};
-use pelhaim_core::{Event, SessionKey, Tool};
+use pelhaim_core::{Event, RepoRef, SessionKey, Tool};
 use sha2::{Digest, Sha256};
 
 type Fingerprint = BTreeMap<PathBuf, (u64, SystemTime, Vec<u8>)>;
@@ -126,6 +126,7 @@ fn observe_sources_contain_no_write_calls() {
         "observe/codex.rs",
         "observe/discover.rs",
         "observe/version.rs",
+        "observe/repo.rs",
     ] {
         assert!(files.contains(&src.join(must)), "scan missed {must}");
     }
@@ -185,4 +186,77 @@ fn default_options_poll_every_second_and_sweep_every_ten() {
     assert_eq!(o.poll, Duration::from_secs(1));
     assert_eq!(o.sweep, Duration::from_secs(10));
     assert!(!o.once);
+}
+
+fn repo_of(events: &[Event], key: &SessionKey) -> Option<RepoRef> {
+    events.iter().rev().find_map(|e| match e {
+        Event::SessionDiscovered { key: k, repo, .. } if k == key => Some(repo.clone()),
+        _ => None,
+    })?
+}
+
+/// §7.7 step 4: resolving cwds to repositories reads `.git` entries and
+/// writes nothing, in the repositories or the homes.
+#[tokio::test(flavor = "multi_thread")]
+async fn repo_resolution_never_modifies_repos_or_homes() {
+    let repos = tempfile::tempdir().unwrap();
+    repo_tree(repos.path());
+    let root = fs::canonicalize(repos.path()).unwrap();
+    let worktree = root.join("SafeAscent-r7v2/crates");
+
+    let claude = tempfile::tempdir().unwrap();
+    let project = claude.path().join("projects/-w");
+    fs::create_dir_all(&project).unwrap();
+    let line = |sid: &str, cwd: &Path| {
+        format!(
+            r#"{{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"{sid}","timestamp":"2026-11-24T10:00:00.000Z","cwd":"{}","version":"2.1.331","message":{{"role":"user","content":"hi"}}}}"#,
+            cwd.display()
+        )
+    };
+    fs::write(project.join("W1.jsonl"), line("W1", &worktree) + "\n").unwrap();
+    fs::write(
+        project.join("N1.jsonl"),
+        line("N1", &root.join("loose/dir")) + "\n",
+    )
+    .unwrap();
+
+    let codex = tempfile::tempdir().unwrap();
+    let day = codex.path().join("sessions/2026/11/24");
+    fs::create_dir_all(&day).unwrap();
+    fs::write(
+        day.join("rollout-2026-11-24T10-00-00-X1.jsonl"),
+        format!(
+            r#"{{"timestamp":"2026-11-24T10:00:00Z","type":"session_meta","payload":{{"id":"X1","timestamp":"2026-11-24T10:00:00Z","cwd":"{}","cli_version":"0.158.0"}}}}"#,
+            root.join("Plain/src/deep").display()
+        ) + "\n",
+    )
+    .unwrap();
+
+    let before = (
+        fingerprint(repos.path()),
+        fingerprint(claude.path()),
+        fingerprint(codex.path()),
+    );
+    let once = |home: &Path| ObserveOptions {
+        once: true,
+        ..opts(home)
+    };
+    let c = run_once(Box::new(ObserveClaude::new(once(claude.path())))).await;
+    let x = run_once(Box::new(ObserveCodex::new(once(codex.path())))).await;
+    let named = |name: &str| {
+        Some(RepoRef {
+            name: name.into(),
+            root: root.join(name),
+        })
+    };
+    assert_eq!(repo_of(&c, &SessionKey::claude("W1")), named("SafeAscent"));
+    assert!(discovered(&c, &SessionKey::claude("N1")));
+    assert_eq!(repo_of(&c, &SessionKey::claude("N1")), None);
+    assert_eq!(repo_of(&x, &SessionKey::codex("X1")), named("Plain"));
+    let after = (
+        fingerprint(repos.path()),
+        fingerprint(claude.path()),
+        fingerprint(codex.path()),
+    );
+    assert_eq!(before, after, "repo resolution changed a repo or a home");
 }

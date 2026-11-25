@@ -183,6 +183,9 @@ pub struct BoardCfg {
     pub float_alert_lines: bool,
     /// Stations shown per track; older ones fold into "+N earlier" (§7.10).
     pub max_stations: usize,
+    /// §7.7 (2026-11-24): place untagged sessions by their cwd's repository,
+    /// and draw lines for repositories and tags not in `[[project]]`.
+    pub auto_projects: bool,
 }
 
 impl Default for BoardCfg {
@@ -192,6 +195,7 @@ impl Default for BoardCfg {
             motion: Motion::Full,
             float_alert_lines: true,
             max_stations: 5,
+            auto_projects: true,
         }
     }
 }
@@ -416,7 +420,7 @@ impl Config {
         Ok(())
     }
 
-    pub fn engine_config(&self, local_offset: FixedOffset) -> EngineConfig {
+    pub fn engine_config(&self, local_offset: FixedOffset, env: &dyn Env) -> EngineConfig {
         EngineConfig {
             projects: self
                 .project
@@ -425,6 +429,7 @@ impl Config {
                     slug: p.slug.clone(),
                     name: p.name.clone(),
                     order: p.order,
+                    path: p.path.as_deref().map(|d| project_path(d, env)),
                 })
                 .collect(),
             dispatch_sessions: self.dispatch.sessions.clone(),
@@ -438,6 +443,7 @@ impl Config {
             decision_log_write: self.decision_log.write == LogWrite::OnClick,
             local_offset,
             max_stations: self.board.max_stations,
+            auto_projects: self.board.auto_projects,
         }
     }
 
@@ -471,6 +477,13 @@ fn home_dir(configured: &Option<String>, var: &str, default: &str, env: &dyn Env
         Some(p) => expand_tilde(&p, env),
         None => env.home().join(default),
     }
+}
+
+/// Canonical where it exists, so it compares equal to the canonical repository
+/// root the observer reports for a session's cwd.
+fn project_path(p: &str, env: &dyn Env) -> PathBuf {
+    let p = expand_tilde(p, env);
+    canonical_prefix(&p).unwrap_or_else(|| normalize(&p))
 }
 
 /// Compares lexically normalised paths, and canonical ones too when both exist,
@@ -564,7 +577,7 @@ mod tests {
     fn defaults_match_engine_config_default() {
         let utc = FixedOffset::east_opt(0).unwrap();
         assert_eq!(
-            Config::default().engine_config(utc),
+            Config::default().engine_config(utc, &MapEnv::new("/tmp/h")),
             EngineConfig::default()
         );
     }
@@ -603,20 +616,23 @@ mod tests {
         assert_eq!(c.board.motion, Motion::Reduced);
         assert!(!c.board.float_alert_lines);
         assert_eq!(c.board.max_stations, 3);
+        assert!(!c.board.auto_projects);
         assert_eq!(c.decision_log.write, LogWrite::Off);
         assert_eq!(c.observe.active_window.0, Duration::from_secs(24 * 3600));
         assert_eq!(c.observe.stall_after.0, Some(Duration::from_secs(15 * 60)));
         assert_eq!(c.observe.permission_after.0, None);
         assert!(c.observe.result_alerts);
 
-        let e = c.engine_config(FixedOffset::east_opt(3600).unwrap());
+        let env = MapEnv::new("/tmp/h");
+        let e = c.engine_config(FixedOffset::east_opt(3600).unwrap(), &env);
         assert_eq!(e.projects.len(), 7);
         assert_eq!(
             e.projects[0],
             ProjectCfg {
                 slug: "safeascent".into(),
                 name: "SafeAscent".into(),
-                order: 1
+                order: 1,
+                path: Some(project_path("~/Developer/safeascent", &env)),
             }
         );
         assert_eq!(e.dispatch_sessions, c.dispatch.sessions);
@@ -625,6 +641,7 @@ mod tests {
         assert!(e.result_alerts);
         assert!(!e.float_alert_lines);
         assert_eq!(e.max_stations, 3);
+        assert!(!e.auto_projects);
         assert!(!e.keep_awake_enabled);
         assert!(!e.include_observed);
         assert!(e.remote_enabled);

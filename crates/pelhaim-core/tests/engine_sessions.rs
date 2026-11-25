@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use pelhaim_core::testkit::{cfg, discover, engine, ts};
+use pelhaim_core::testkit::{cfg, discover, engine, engine_tags_only, ts};
 use pelhaim_core::{
     Engine, Event, Input, LEG_BLOCKS, LineKey, Position, SessionKey, Snapshot, TagParse,
     TagResolution, Tool, Track, Train, TrainState, parse_tag, title_from_prompt,
@@ -32,6 +32,7 @@ fn discover_at(
         tool: Tool::Claude,
         parent,
         cwd: cwd.map(str::to_string),
+        repo: None,
         version: Some("2.1.331".into()),
         started: ts(at),
     }));
@@ -199,7 +200,7 @@ fn cwd_never_influences_line() {
 
 #[test]
 fn mis_tagged_goes_unsorted() {
-    let mut e = engine(&["ethica"]);
+    let mut e = engine_tags_only(&["ethica"]);
     let s1 = key("S1");
     discover_at(&mut e, s1.clone(), None, None, "2026-11-23T14:00:00Z");
     first_prompt(
@@ -765,6 +766,7 @@ fn numbers_labels_and_initial_state() {
         parent: None,
         path: "/elsewhere".into(),
         cwd: Some("/new".into()),
+        repo: None,
         version: Some("2.2.0".into()),
         started: ts("2026-11-23T20:00:00Z"),
     }));

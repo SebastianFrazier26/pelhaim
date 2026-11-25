@@ -125,7 +125,7 @@ pub fn start_engine(
         decisions = restored.decisions.len(),
         "store loaded"
     );
-    let engine = Engine::new(cfg.engine_config(local_offset()), restored);
+    let engine = Engine::new(cfg.engine_config(local_offset(), env), restored);
     let (tx, rx) = input_channel();
     let worker = StoreWorker::spawn(
         store,
@@ -287,7 +287,7 @@ pub fn dump_scene(loaded: &Loaded, env: &dyn Env, out: &Path) -> anyhow::Result<
     let restored = Store::open(&db)
         .and_then(|s| s.load())
         .with_context(|| format!("loading {}", db.display()))?;
-    let mut engine = Engine::new(cfg.engine_config(local_offset()), restored);
+    let mut engine = Engine::new(cfg.engine_config(local_offset(), env), restored);
     let events = runtime()?.block_on(catch_up(adapters(cfg, env, true), CATCH_UP_TIMEOUT))?;
     tracing::info!(events = events.len(), "headless catch-up done");
     for ev in events {

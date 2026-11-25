@@ -37,7 +37,8 @@ Look for:
 
 Check, ticking each:
 
-1. [ ] Every tagged Claude Code and Codex session or agent is on its project's line. Untagged ones are on UNSORTED, each with an Assign alert.
+1. [ ] Every tagged Claude Code and Codex session or agent is on its project's line.
+1a. [ ] (Owner decision 2026-11-24.) With no `[[project]]` in config, an untagged session running in a repository or one of its worktrees (e.g. `~/Developer/SafeAscent-r7v2`) is on a line named after the main repository (`SafeAscent`), with no Assign alert. A subagent of the orchestrator whose cwd is a repository does the same, and never lands on DISPATCH. Only sessions with no tag and no repository (e.g. cwd `~/Developer`) are on UNSORTED, each with an Assign alert. With `[board].auto_projects = false`, untagged sessions are back on UNSORTED.
 2. [ ] (Owner decision 2026-11-24.) The orchestrator draws no train once it is tagged `dispatch`, listed in `[dispatch].sessions`, or marked "This is the orchestrator" on its Assign popup. DISPATCH is one row, `DISPATCH · N agents running`, and N matches the orchestrator's working subagents. Its tagged subagents run on their own lines with no fork back to DISPATCH; untagged ones land on UNSORTED with an Assign alert (DISPATCH is never inherited). A question from the orchestrator still opens a popup and turns the count yellow.
 2a. [ ] (Owner decision 2026-11-24.) Prompts make no stations: a session that never prints a marker has a bare track, and its train stops one block short of the end however many tool calls it makes.
 2b. [ ] (Owner decision 2026-11-24.) Have an agent print, on lines of their own, `pelhaim-milestone: plan ~2m` and later `pelhaim-milestone: build ~1h`. A station appears for each; `plan` turns done grey when `build` starts; `build` shows `ARR HH:MM` (local time, about an hour after the marker). A marker inside a code fence or mid-sentence makes nothing; repeating `plan` makes nothing.
