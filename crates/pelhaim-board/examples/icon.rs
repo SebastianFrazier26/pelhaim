@@ -6,12 +6,12 @@
 //! 16 and 32 px come from the hand-tuned grids `assets/icon/grid-{16,32}.txt`. 64 px and up
 //! draw a 64-cell scene at a whole number of pixels per cell, so every body edge lands on a
 //! pixel boundary; only the tile corners, the LED dots and their glow are anti-aliased. The
-//! LED "1" is the board font's 5x7 glyph, read from `assets/font/glyphs.txt`.
+//! LED "1" is drawn here, not taken from the board font: the font's short hook and foot read as
+//! an "L" at icon size (owner, 2026-11-24), so the icon's "1" has a long diagonal flag and no foot.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use pelhaim_board::font::grid;
 use pelhaim_board::{PaletteKind, Rgba, palette};
 
 const CELLS: f32 = 64.0;
@@ -20,6 +20,9 @@ const TILE: (f32, f32) = (6.0, 58.0);
 const TILE_RADIUS: f32 = 11.6;
 const SIGN_CENTER: (f32, f32) = (32.0, 19.0);
 const PITCH: f32 = 1.0;
+const ONE: [u16; 7] = [
+    0b00100, 0b01100, 0b10100, 0b00100, 0b00100, 0b00100, 0b00100,
+];
 const RING_RADIUS: f32 = 5.6;
 const DOT_RADIUS: f32 = 0.38;
 
@@ -306,7 +309,7 @@ impl Scene<'_> {
         for (r, bits) in one.iter().enumerate() {
             for c in 0..5 {
                 if bits & (1 << (4 - c)) != 0 {
-                    lit.push((cx + (c as f32 - 2.0) * PITCH, cy + (r as f32 - 3.0) * PITCH));
+                    lit.push((cx + (c as f32 - 1.5) * PITCH, cy + (r as f32 - 3.0) * PITCH));
                 }
             }
         }
@@ -395,13 +398,7 @@ fn draw_grid(src: &str, k: &Colors) -> Canvas {
 fn main() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let read = |p: &str| fs::read_to_string(root.join(p)).unwrap_or_else(|e| panic!("{p}: {e}"));
-    let cuts = grid::parse(&read("assets/font/glyphs.txt")).expect("glyphs.txt");
-    let one = cuts
-        .iter()
-        .find(|g| (g.w, g.h) == (5, 7))
-        .and_then(|g| g.map.iter().find(|(c, _)| *c == '1'))
-        .map(|(_, rows)| rows.clone())
-        .expect("the 5x7 cut has a '1'");
+    let one = ONE;
     let k = colors();
 
     let png_dir = root.join("assets/icon/png");
