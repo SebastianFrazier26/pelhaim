@@ -106,10 +106,10 @@ pub fn frame_scene(
     build_board(
         &mut out,
         &input(board_snap),
-        &board_layout(board_snap, &view.expanded),
+        &board_layout(board_snap, viewport.0),
         &view.view(),
     );
-    let live_layout = board_layout(live, &view.expanded);
+    let live_layout = board_layout(live, viewport.0);
     build_overlays(&mut out, &input(live), &live_layout);
     (out, live_layout)
 }
@@ -629,12 +629,12 @@ mod tests {
     fn paused_board_draws_the_frozen_snapshot() {
         let frozen = sample_board();
         let mut live = frozen.clone();
-        let gone = live
-            .trains
-            .values()
-            .find(|t| live.tracks[&t.track].line != pelhaim_core::LineKey::Dispatch)
+        // A line's only session, so its whole line train goes with it.
+        let gone = pelhaim_board::line_trains(&live)
+            .into_iter()
+            .find(|lt| lt.members.len() == 1)
             .unwrap()
-            .id;
+            .lead;
         live.trains.remove(&gone);
         let view = ViewState {
             paused: true,

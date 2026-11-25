@@ -128,10 +128,10 @@ All of this section is **[Owner]**, restated here so the builder has it in one p
 
 | Board | pelhaim |
 |---|---|
-| Train | An agent: a subagent, or a session's main agent |
-| Line (a bundle of tracks) | A project / GitHub repo |
+| Train | An agent: a subagent, or a session's main agent. *Board, 2026-11-24 (§5.4): one train per line, folding in every agent on the project.* |
+| Line (a bundle of tracks) | A project / GitHub repo. *2026-11-24 (§5.4): one line, no bundle.* |
 | Track | A pipeline; trains visibly advance along it |
-| Diverging track | A fork or a detach |
+| Diverging track | A fork or a detach. *Not drawn from 2026-11-24 (§5.4).* |
 | Station / stop | A task, produced by a planning step; dependencies are edges between stations |
 
 **Modes**
@@ -256,6 +256,26 @@ The owner ran the M1 board against real sessions on 2026-11-24 and made three de
    - A marker may end in an estimate: `pelhaim-milestone: <name> ~<duration>`, e.g. `~20m`, `~1h30m`, `~45s`.
    - pelhaim learns a correction from completed stations: estimate × factor is the ETA. The factor and its rules are in §7.10.
    - The station the train runs to shows a train-board clock, `ARR 14:52` in local time, in the pixel font. An overdue station turns amber (the matte yellow). A station with no estimate shows no clock.
+
+### 5.4 Owner decisions on the board's lines (2026-11-24)
+
+The owner looked at the live board on 2026-11-24: "the lines should be differently colored as a base to distinguish and have more turns / geometry to look like real train lines, they should also extend most of the way across the screen instead of being so short. Also the multiple subtrains below a project shouldn't exist, it should be 1 train per project with stations on the line." The four decisions below are **[Owner], 2026-11-24**. They **reverse per-agent tracks and drawn forks** (§5 metaphor table, §9.1 "4 visible tracks per line" and "+N stub", §9.1 "sharp ~60° diverging tracks", §7.2 block colours). §6.6, §7.2, §7.10, §9.1 and §9.3 have been updated to match. The mechanics under each are the **[Agent's call]**.
+
+1. **One train per project line.** No sub-tracks and no per-agent trains under a project.
+   - Every session and subagent on the line folds into its single train.
+   - State, by precedence: waiting on you (incl. probably waiting) > failed > working > stalled > idle > done.
+   - The tag number is the earliest-started session that is not done (all done: the earliest). The inset and the a11y name list the agents inside.
+   - Every milestone from every agent on the line is a station on the one line, ordered by start time; at most `[board].max_stations` show, older ones fold into `+N earlier` (the count includes stations the engine already folded per track).
+   - The train runs to the **oldest still-active station** and that station alone shows `ARR`. Why the oldest: everything behind the train is then done, which keeps "passed" honest when agents work in parallel. Its position in that leg is the owning session's block on its own leg.
+   - Forks are no longer drawn. UNSORTED folds the same way, so no line has sub-tracks.
+   - **Where the fold lives:** the board (`pelhaim-board::scene::fold`), each frame, from the snapshot. The engine stays per session: alerts, ETAs and their timings, the remote compact snapshot and the reducer's tests are unchanged, and the fold is a pure function that cannot drift from engine state. Alerts stay per session; clicking a yellow tag opens the alert of the session whose state the tag shows.
+2. **A distinct base colour per line**, like subway lines.
+   - A 12-colour line palette in OKLCH (hues 10°–345°, 30° apart; matte L 0.57 C 0.095, film L 0.64 C 0.13, high contrast L 0.74 C 0.14), named rose, orange, ochre, olive, green, jade, teal, cyan, blue, indigo, violet, magenta. UNSORTED gets a neutral grey.
+   - A project's colour is slot `(FNV-1a(slug) >> 32) mod 12`, overridden by `[[project]].color` (a palette name or `#RRGGBB`). Two slugs can share a slot; the override settles that.
+   - State shows on the train tag (state fill, background ring, arrowhead) and the station squares, never by recolouring the line. Matte line colours sit at least 0.08 OKLab L darker than work, wait and idle, and at least 0.05 away from fail and done (tested).
+   - The line is full colour behind the train and dimmed ahead of it (progress, not state). The cleared-route green is retired.
+3. **Real train-line geometry.** Each line is a polyline of level runs joined by 45° diagonals: 3–5 jogs between three levels 10 units apart, each jog near an even division of the span with jitter, all from a SplitMix64 stream seeded by the slug's hash, so a line's shape is stable across frames and restarts. Blocks keep the block-segment style along the path. Lines never cross labels: each line lives in its own band, and a station label (or `+N earlier`) is lifted above the highest point of its own line under it.
+4. **Lines span most of the screen.** Every line runs from 6% to 94% of the board width (88%), at the window's width in board units at k = 1. Stations sit at equal arc-length steps, station *i* of *n* at (*i* + 1)/(*n* + 1) of the length, so a line with few stations still spans the width; the train's head maps along it the same way. Inactive lines fold to a thin line of the same span in their colour.
 
 ## 6. Architecture
 
@@ -385,6 +405,7 @@ name = "SafeAscent"                   # the line label
 path = "~/Developer/safeascent"       # repo root: worktrees branch from here; an untagged session in this repo lands here (§7.7)
 repo = "SebastianFrazier26/safeascent" # optional, for links and PRs
 order = 1
+color = "teal"                        # optional line colour: palette name or "#RRGGBB"; default from the slug (§5.4)
 
 [dispatch]
 # Observed sessions that are orchestrators: drawn on the DISPATCH line (§7.7).
@@ -544,7 +565,9 @@ struct Decision {            // mirrors one DECISION-LOG.md entry
 
 ### 7.2 State derivation
 
-Colour is never stored (spike lesson). Each frame, block colour is derived from `TrainState`, `StationStatus` and `Position`:
+Colour is never stored (spike lesson). Each frame, block colour is derived from `TrainState`, `StationStatus` and `Position`.
+
+**Superseded on the board 2026-11-24 (§5.4):** blocks take their line's own colour, full behind the line train and dimmed ahead; state shows only on the tag and the station squares. The rules below describe the M1 track board before that decision:
 
 - **Blocks behind** a train, back to its origin, are `Done` grey.
 - **The train's occupied blocks** take the train state colour. A train is 3 blocks long; while working, 5.
@@ -752,6 +775,7 @@ pelhaim-milestone: <name> ~<duration>
 **Stations**
 
 - A marker closes the track's newest station (Done) and opens a new Active one, titled with the name, which the train then runs to (§7.4).
+- **Board, 2026-11-24 (§5.4):** the board merges every track's stations on a line in start order and shows at most `max_stations` of them, the older ones counted into `+N earlier` with the engine's per-track `folded`. The engine still keeps the cap per track, as below.
 - At most `[board].max_stations` stations (default 5, 1–20) are kept per track. Older ones are dropped from the front and counted in `Track.folded`, drawn as `+N earlier` at the start of the track and as the first row of the inset's station list. The train's leg and any fork point on the track shift with the drop.
 - A subagent starts with no station; its spawn description is its tag label only.
 - The platform bar is the train's state colour while the train stands at it, amber while the station is overdue, done grey once passed, and idle otherwise.
@@ -1186,7 +1210,7 @@ pelhaim (Mac) ──outbound TLS WebSocket──► relay ◄──outbound TLS 
 
 **Density cut vs the spike**
 
-- At most **4 visible tracks per line**. More collapse into a "+N" stub that expands on click.
+- At most **4 visible tracks per line**. More collapse into a "+N" stub that expands on click. *Reversed 2026-11-24 (§5.4): one train per line, so no stub.*
 - **No decorative crossovers.** An "X" appears only where a subagent's result actually merges back.
 - More space between bundles: 36 units instead of 25–30.
 - Station labels only at real stations. No header row unless there are milestones.
@@ -1196,7 +1220,7 @@ pelhaim (Mac) ──outbound TLS WebSocket──► relay ◄──outbound TLS 
 
 - train tags: a filled rectangle with dark digits, a direction arrowhead, and a dotted underline;
 - platform bars that light when a train berths;
-- sharp ~60° diverging tracks;
+- sharp ~60° diverging tracks (*not drawn from 2026-11-24, §5.4; lines turn on 45° diagonals instead*);
 - teal end glyphs;
 - the yellow selection rectangle;
 - the offset frame-stack inset.
@@ -1252,11 +1276,11 @@ Why:
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────────┐
 │ DISPATCH · 6 agents running                                                              │  ← one-row strip, no train (§5.3)
-│ SAFEASCENT ●2      plan ─── migrate 0007 ─── backfill ─── Stage C1 ARR 14:52              │  ← line label (+ open-decision badge), stations, arrival clock
-│  ━━ ━━ ━━ ━[1423▶]━━ ━━ ━━ ━━ ━━ ━━ ━━ ━━                                                │  ← tracks, blocks, tags
-│  ━━ ━━ ━━ ━━ ━━ ━━ ━━[◀1148]━━ ━━ ╲                                                      │
-│                                      ╲━━ ━━ ━━ (magenta branch: detached)                │
-│ ETHICA            scenarios ─── corpus rev ─── judge val …                               │
+│ SAFEASCENT ●2                                                                            │  ← line label (+ open-decision badge)
+│      plan            migrate 0007                    Stage C1 ARR 14:52                  │  ← station labels, lifted clear of the line
+│   ━━ ━□━ ━━[1423▶]━ ━━╲                  ╱━━ ━□━ ━━ ━━ ━━ ━━ ━━ ━━ ━━ ━━ ━□━ ━━  ✕      │  ← one line in its own colour, 45° jogs, one train
+│                        ╲━━ ━━ ━━ ━━ ━━ ━╱                                                │     (§5.4, 2026-11-24: no sub-tracks, no forks)
+│ ETHICA                                                                                   │
 │  …                                                                                       │
 │                                                                    ┌ alert tray ┐        │
 │                                                                    │ ? 1148  2m │        │

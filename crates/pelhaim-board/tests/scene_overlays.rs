@@ -27,8 +27,8 @@ fn input<'a>(snap: &'a Snapshot, view: &'a ViewState) -> SceneInput<'a> {
     }
 }
 
-fn layout(snap: &Snapshot, view: &ViewState) -> Layout {
-    board_layout(snap, &view.expanded)
+fn layout(snap: &Snapshot, _view: &ViewState) -> Layout {
+    board_layout(snap, 1600.0)
 }
 
 fn with_popup(id: &str) -> ViewState {
@@ -484,7 +484,7 @@ fn console_grows_to_six_rows_and_shows_selection_status() {
     assert_eq!(g1.rows, 1);
     assert_eq!(
         console::selection_status(&snap, &view).unwrap(),
-        "1423 · SAFEASCENT · waiting on you: Proceed to C1? · rehearse"
+        "1423 · SAFEASCENT · waiting on you: Proceed to C1? · 2 agents · rehearse"
     );
     view.console.insert(&"x".repeat(5000));
     let g6 = console::geom(&input(&snap, &view));

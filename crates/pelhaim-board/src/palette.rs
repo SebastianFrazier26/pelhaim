@@ -1,4 +1,4 @@
-use crate::color::{Rgba, oklab_mute};
+use crate::color::{Rgba, oklab_mute, oklch};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum PaletteKind {
@@ -115,10 +115,140 @@ pub fn block_color(p: &Palette, s: BlockState) -> Rgba {
     }
 }
 
+/// §9.1 (owner, 2026-11-24): every line has its own base colour, like a subway map.
+pub const LINE_COLOR_NAMES: [&str; 12] = [
+    "rose", "orange", "ochre", "olive", "green", "jade", "teal", "cyan", "blue", "indigo",
+    "violet", "magenta",
+];
+const LINE_HUES: [f32; 12] = [
+    10.0, 45.0, 75.0, 105.0, 135.0, 165.0, 195.0, 225.0, 255.0, 285.0, 315.0, 345.0,
+];
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LineColor {
+    Palette(usize),
+    Rgb(u32),
+    /// UNSORTED: not a project, so no hue of its own.
+    Neutral,
+}
+
+/// A `[[project]].color`: a palette name or `#RRGGBB`.
+pub fn parse_line_color(s: &str) -> Option<LineColor> {
+    if let Some(hex) = s.strip_prefix('#') {
+        return (hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+            .then(|| u32::from_str_radix(hex, 16).ok())
+            .flatten()
+            .map(LineColor::Rgb);
+    }
+    LINE_COLOR_NAMES
+        .iter()
+        .position(|n| n.eq_ignore_ascii_case(s))
+        .map(LineColor::Palette)
+}
+
+/// FNV-1a: stable across Rust versions and platforms, unlike `DefaultHasher`.
+pub fn slug_hash(slug: &str) -> u64 {
+    slug.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+/// The override if it parses, else a palette slot picked by the slug's hash. The high
+/// half: FNV's low bits mix poorly, and short slugs bunched onto a few hues with them.
+pub fn line_color(slug: &str, color: Option<&str>) -> LineColor {
+    color.and_then(parse_line_color).unwrap_or_else(|| {
+        LineColor::Palette(((slug_hash(slug) >> 32) % LINE_COLOR_NAMES.len() as u64) as usize)
+    })
+}
+
+/// Line colours sit darker than the state colours, so a state tag or station never reads
+/// as part of its line; red `fail` is nearly as dark, so it is kept apart by distance. High contrast lifts them for the black bg.
+pub fn line_rgba(k: PaletteKind, c: LineColor) -> Rgba {
+    let (l, ch) = match k {
+        PaletteKind::Matte => (0.57, 0.095),
+        PaletteKind::Film => (0.64, 0.13),
+        PaletteKind::HighContrast => (0.74, 0.14),
+    };
+    match c {
+        LineColor::Palette(i) => oklch(l, ch, LINE_HUES[i % LINE_HUES.len()]),
+        LineColor::Rgb(rgb) => Rgba::hex(rgb),
+        LineColor::Neutral => oklch(l - 0.06, 0.012, 280.0),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::color::oklab_l;
+    use crate::color::{oklab_dist, oklab_l};
+
+    #[test]
+    fn line_palette_is_distinct_readable_and_apart_from_state() {
+        for k in [
+            PaletteKind::Matte,
+            PaletteKind::Film,
+            PaletteKind::HighContrast,
+        ] {
+            let p = palette(k);
+            let cs: Vec<Rgba> = (0..LINE_COLOR_NAMES.len())
+                .map(|i| line_rgba(k, LineColor::Palette(i)))
+                .collect();
+            for (i, a) in cs.iter().enumerate() {
+                assert!(
+                    oklab_l(*a) - oklab_l(p.bg) > 0.35,
+                    "{k:?} {i} readable on bg"
+                );
+                for b in &cs[i + 1..] {
+                    assert!(oklab_dist(*a, *b) > 0.04, "{k:?} {i}: {a:?} vs {b:?}");
+                }
+            }
+            if k == PaletteKind::Matte {
+                for st in [p.work, p.wait, p.idle] {
+                    assert!(
+                        cs.iter().all(|c| oklab_l(st) - oklab_l(*c) > 0.08),
+                        "state {st:?} is lighter than every line"
+                    );
+                }
+                for st in [p.fail, p.done] {
+                    assert!(
+                        cs.iter().all(|c| oklab_dist(st, *c) > 0.05),
+                        "state {st:?} is apart from every line"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn line_color_is_deterministic_and_overridable() {
+        assert_eq!(
+            line_color("safeascent", None),
+            line_color("safeascent", None)
+        );
+        assert_eq!(slug_hash("a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(
+            line_color("safeascent", Some("teal")),
+            LineColor::Palette(6)
+        );
+        assert_eq!(line_color("x", Some("#1a2B3c")), LineColor::Rgb(0x1A2B3C));
+        assert_eq!(line_color("x", Some("chartreuse")), line_color("x", None));
+        for bad in ["#12345", "#12345g", "", "#"] {
+            assert_eq!(parse_line_color(bad), None, "{bad:?}");
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for slug in [
+            "safeascent",
+            "ethica",
+            "cabn",
+            "loosy-goose",
+            "stringcan",
+            "pelhaim",
+        ] {
+            if let LineColor::Palette(i) = line_color(slug, None) {
+                seen.insert(i);
+            }
+        }
+        assert!(seen.len() >= 5, "the hash spreads real slugs: {seen:?}");
+    }
 
     #[test]
     fn matte_matches_spec_table() {

@@ -66,6 +66,18 @@ pub fn oklab_mute(c: Rgba, l: f32, chroma: f32) -> Rgba {
     from_oklab([ll * l, a * ch, b * ch], c.0[3])
 }
 
+/// OKLCH, hue in degrees; out-of-gamut channels clamp.
+pub fn oklch(l: f32, c: f32, hue_deg: f32) -> Rgba {
+    let (l, c, h) = (f64::from(l), f64::from(c), f64::from(hue_deg).to_radians());
+    from_oklab([l, c * h.cos(), c * h.sin()], 255)
+}
+
+/// Euclidean distance in OKLab.
+pub fn oklab_dist(a: Rgba, b: Rgba) -> f32 {
+    let (x, y) = (to_oklab(a), to_oklab(b));
+    ((x[0] - y[0]).powi(2) + (x[1] - y[1]).powi(2) + (x[2] - y[2]).powi(2)).sqrt() as f32
+}
+
 pub fn oklab_l(c: Rgba) -> f32 {
     to_oklab(c)[0] as f32
 }

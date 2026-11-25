@@ -31,6 +31,8 @@ pub struct ProjectCfg {
     /// The repository root, expanded and canonical where it exists; a session
     /// whose repository root equals it lands on this line (§7.7).
     pub path: Option<std::path::PathBuf>,
+    /// The line colour override, validated by the config loader.
+    pub color: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -390,13 +392,14 @@ impl Engine {
             decisions_unexported: self.decisions.iter().filter(|d| !d.written_to_md).count() as u32,
             keep_awake: self.keep_awake_status(),
             utc_offset_secs: self.cfg.local_offset.local_minus_utc(),
+            max_stations: self.cfg.max_stations.max(1) as u32,
         }
     }
 
-    /// `(slug, name)`: configured lines by `order`, then auto-created ones by
+    /// `(slug, name, color)`: configured lines by `order`, then auto-created ones by
     /// slug. An auto line shows only while a track is on it, so a session that
     /// sat there until its tag arrived leaves no empty line behind.
-    fn projects_in_order(&self) -> Vec<(String, String)> {
+    fn projects_in_order(&self) -> Vec<(String, String, Option<String>)> {
         let mut projects: Vec<&ProjectCfg> = self.cfg.projects.iter().collect();
         projects.sort_by_key(|p| p.order);
         let occupied: BTreeSet<&str> = self
@@ -409,12 +412,12 @@ impl Engine {
             .collect();
         projects
             .into_iter()
-            .map(|p| (p.slug.clone(), p.name.clone()))
+            .map(|p| (p.slug.clone(), p.name.clone(), p.color.clone()))
             .chain(
                 self.auto_lines
                     .iter()
                     .filter(|(s, _)| occupied.contains(s.as_str()))
-                    .map(|(s, n)| (s.clone(), n.clone())),
+                    .map(|(s, n)| (s.clone(), n.clone(), None)),
             )
             .collect()
     }
@@ -424,7 +427,10 @@ impl Engine {
         let mut lines = vec![self.line_view(LineKey::Dispatch, "DISPATCH".into())];
         let mut project_lines: Vec<LineView> = projects
             .into_iter()
-            .map(|(slug, name)| self.line_view(LineKey::Project(slug), name))
+            .map(|(slug, name, color)| LineView {
+                color,
+                ..self.line_view(LineKey::Project(slug), name)
+            })
             .collect();
         if self.cfg.float_alert_lines {
             project_lines.sort_by_key(|l| !l.has_open_alert);
@@ -477,6 +483,7 @@ impl Engine {
             open_decisions,
             key,
             name,
+            color: None,
         }
     }
 

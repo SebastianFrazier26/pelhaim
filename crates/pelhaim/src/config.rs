@@ -81,6 +81,10 @@ pub struct ProjectEntry {
     pub order: i32,
     #[serde(default)]
     pub log_section: Option<String>,
+    /// The line's base colour: a palette name (`teal`) or `#RRGGBB`. Unset, the slug's
+    /// hash picks one.
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Deserialize, Debug)]
@@ -371,6 +375,17 @@ impl Config {
             if !seen.insert(p.slug.as_str()) {
                 return Err(invalid(&key, format!("duplicate slug {:?}", p.slug)));
             }
+            if let Some(c) = &p.color
+                && pelhaim_board::parse_line_color(c).is_none()
+            {
+                return Err(invalid(
+                    &format!("project[{i}].color"),
+                    format!(
+                        "{c:?} must be #RRGGBB or one of {}",
+                        pelhaim_board::palette::LINE_COLOR_NAMES.join(", ")
+                    ),
+                ));
+            }
             // The decision-log writer matches headings on the raw key but writes a new
             // heading sanitised, so a key sanitising changes would never match its own
             // section and every export would append another one.
@@ -430,6 +445,7 @@ impl Config {
                     name: p.name.clone(),
                     order: p.order,
                     path: p.path.as_deref().map(|d| project_path(d, env)),
+                    color: p.color.clone(),
                 })
                 .collect(),
             dispatch_sessions: self.dispatch.sessions.clone(),
@@ -633,6 +649,7 @@ mod tests {
                 name: "SafeAscent".into(),
                 order: 1,
                 path: Some(project_path("~/Developer/safeascent", &env)),
+                color: Some("teal".into()),
             }
         );
         assert_eq!(e.dispatch_sessions, c.dispatch.sessions);
@@ -667,6 +684,16 @@ mod tests {
         assert!(msg.contains("colour"), "{msg}");
         let msg = err_text("palette = \"film\"\n");
         assert!(msg.contains("palette"), "{msg}");
+    }
+
+    #[test]
+    fn project_color_is_a_palette_name_or_hex() {
+        for bad in ["red", "#12345", "#GGGGGG"] {
+            let msg = err_text(&format!(
+                "[[project]]\nslug = \"a\"\nname = \"A\"\ncolor = \"{bad}\"\n"
+            ));
+            assert!(msg.contains("project[0].color"), "{bad}: {msg}");
+        }
     }
 
     #[test]

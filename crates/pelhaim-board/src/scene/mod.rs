@@ -1,38 +1,37 @@
 pub mod console;
+pub mod fold;
 pub mod inset;
 pub mod lamp;
-mod lines;
+pub mod lines;
 pub mod popup;
 mod tags;
 pub mod tray;
 
-use std::collections::BTreeMap;
-
-use pelhaim_core::{
-    AlertId, AlertKind, LineKey, Snapshot, StationId, TrackId, Train, TrainId, TrainState,
-};
+use pelhaim_core::{AlertId, AlertKind, LineKey, Snapshot, Train, TrainId, TrainState};
 
 use crate::color::Rgba;
 use crate::display::{DisplayList, P, Prim, R};
 use crate::font::{Cut, advance, draw_text, text_width};
 use crate::input::ViewState;
-use crate::palette::{BlockState, Palette, PaletteKind, block_color, palette};
+use crate::palette::{
+    BlockState, LineColor, Palette, PaletteKind, block_color, line_rgba, palette,
+};
 use crate::view::View;
 
-pub use lines::{Layout, LineBox, TrackGeom, board_layout};
+pub use fold::{LineTrain, line_train_of, line_trains, state_rank};
+pub use lines::{Layout, LineBox, LineGeom, board_layout};
 pub use tags::tag_rect;
 
+/// The left margin a tag hanging off the line start keeps.
 pub const TRACK_X0: f32 = 8.0;
 pub const LABEL_ROW_H: f32 = 16.0;
+/// The arrow-key pan step and the height `F` fits around a line.
 pub const TRACK_PITCH: f32 = 28.0;
-pub const BUNDLE_GAP: f32 = 36.0;
+pub const BUNDLE_GAP: f32 = 20.0;
 pub const TRACK_THICK: f32 = 2.5;
 pub const BLOCK_GAP: f32 = 4.0;
-pub const MAX_VISIBLE_TRACKS: usize = 4;
 pub const FOLDED_H: f32 = 10.0;
 pub const BLOCK_LENGTHS: [f32; 7] = [14.0, 18.0, 24.0, 18.0, 14.0, 24.0, 18.0];
-/// The row under a line's 4 visible tracks that holds its "+N" stub.
-pub const STUB_ROW_H: f32 = 12.0;
 pub const LABEL_PX: f32 = 1.3;
 
 pub struct SceneInput<'a> {
@@ -64,8 +63,8 @@ impl Scene {
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Hit {
+    /// A line train's tag, by its lead session's train.
     Train(TrainId),
-    Stub(LineKey),
     Alert {
         id: AlertId,
         button: AlertButton,
@@ -95,7 +94,7 @@ pub enum InsetAction {
 }
 
 pub fn build_scene(inp: &SceneInput) -> Scene {
-    let layout = board_layout(inp.snap, &inp.view.expanded);
+    let layout = board_layout(inp.snap, inp.viewport.0);
     let p = palette(inp.palette);
     let mut out = Scene::default();
     out.list.prims.push(Prim::Rect {
@@ -131,7 +130,7 @@ pub fn build_board(out: &mut Scene, inp: &SceneInput, layout: &Layout, v: &View)
         layout,
         v,
         paint: Paint::new(palette(inp.palette), inp.now_s, inp.reduced_motion),
-        train_on: inp.snap.trains.values().map(|t| (t.track, t)).collect(),
+        kind: inp.palette,
     };
     lines::draw(out, &cx);
     tags::draw(out, &cx, inp.view.selected);
@@ -142,10 +141,14 @@ pub(crate) struct Ctx<'a> {
     pub layout: &'a Layout,
     pub v: &'a View,
     pub paint: Paint,
-    pub train_on: BTreeMap<TrackId, &'a Train>,
+    pub kind: PaletteKind,
 }
 
 impl Ctx<'_> {
+    pub fn line_rgba(&self, c: LineColor) -> Rgba {
+        line_rgba(self.kind, c)
+    }
+
     pub fn rect(&self, dl: &mut DisplayList, r: R, color: Rgba) {
         dl.prims.push(Prim::Rect {
             r: self.v.rect(r),
@@ -397,8 +400,8 @@ pub fn train_line(snap: &Snapshot, t: &Train) -> String {
         .map_or_else(|| "?".into(), |tr| line_name(snap, &tr.line))
 }
 
-/// The station the train is at (or the last one, once it is past every leg).
-pub fn current_station(snap: &Snapshot, t: &Train) -> Option<StationId> {
+/// The station a session's train is at (or the last one, once it is past every leg).
+pub fn current_station(snap: &Snapshot, t: &Train) -> Option<pelhaim_core::StationId> {
     let st = &snap.tracks.get(&t.track)?.stations;
     st.get(usize::from(t.position.leg)).or(st.last()).copied()
 }
@@ -407,10 +410,21 @@ pub fn station_title(snap: &Snapshot, t: &Train) -> Option<String> {
     current_station(snap, t).and_then(|id| snap.stations.get(&id).map(|s| s.title.clone()))
 }
 
+pub fn agents_words(n: usize) -> String {
+    match n {
+        1 => "1 agent".into(),
+        n => format!("{n} agents"),
+    }
+}
+
 /// The words for a train's state, so state is never colour-only. Shared by the inset and
 /// the a11y names (F37).
 pub fn state_words(t: &Train, snap: &Snapshot) -> String {
-    match &t.state {
+    state_text(&t.state, snap)
+}
+
+pub fn state_text(s: &TrainState, snap: &Snapshot) -> String {
+    match s {
         TrainState::Working => "working".into(),
         TrainState::Idle => "idle".into(),
         TrainState::Waiting(id) => {

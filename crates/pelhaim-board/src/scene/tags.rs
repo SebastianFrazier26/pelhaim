@@ -1,6 +1,6 @@
 use pelhaim_core::{TagResolution, Train, TrainId, format_train_number};
 
-use super::lines::head_block;
+use super::lines::LineGeom;
 use super::{Ctx, Hit, Layout, Scene};
 use crate::display::{P, Prim, R};
 use crate::font::{Cut, advance, draw_text};
@@ -12,27 +12,32 @@ const DIGIT_PX: f32 = 1.0;
 const UNDERLINE_GAP: f32 = 1.6;
 const HIT_PAD: f32 = 3.0;
 
-fn body_w(train: &Train) -> f32 {
-    let digits = format_train_number(train.number).chars().count() as f32;
+fn body_w(number: u16) -> f32 {
+    let digits = format_train_number(number).chars().count() as f32;
     TAG_PAD + digits * advance(Cut::C5x7, DIGIT_PX)
 }
 
-/// The tag body plus arrowhead, in board units. A train whose track is not laid out (folded
-/// line, or behind a "+N" stub) gets an empty rect at the origin, which no hit test matches.
+/// The tag of the line train that folds in `train`, whichever member it is: body plus
+/// arrowhead in board units, its tip at the head. A train on a folded line gets an empty
+/// rect at the origin, which no hit test matches.
 pub fn tag_rect(layout: &Layout, train: &Train) -> R {
-    let Some(g) = layout.tracks.get(&train.track) else {
-        return R {
+    layout.geom_of(train.id).map_or(
+        R {
             x: 0.0,
             y: 0.0,
             w: 0.0,
             h: 0.0,
-        };
-    };
-    let (x, w) = head_block(g, train);
-    let tw = body_w(train) + ARROW_W;
+        },
+        tag_rect_in,
+    )
+}
+
+pub(crate) fn tag_rect_in(g: &LineGeom) -> R {
+    let (x, y) = g.head();
+    let tw = body_w(g.train.number) + ARROW_W;
     R {
-        x: x + w - tw,
-        y: g.y - TAG_H / 2.0,
+        x: x - tw,
+        y: y - TAG_H / 2.0,
         w: tw,
         h: TAG_H,
     }
@@ -40,13 +45,11 @@ pub fn tag_rect(layout: &Layout, train: &Train) -> R {
 
 pub(super) fn draw(out: &mut Scene, cx: &Ctx, selected: Option<TrainId>) {
     let p = &cx.paint.p;
-    for t in cx.snap.trains.values() {
-        if !cx.layout.tracks.contains_key(&t.track) {
-            continue;
-        }
-        let r = tag_rect(cx.layout, t);
-        let color = cx.paint.state(&t.state);
-        let bw = body_w(t);
+    for g in &cx.layout.geoms {
+        let lt = &g.train;
+        let r = tag_rect_in(g);
+        let color = cx.paint.state(lt.state(cx.snap));
+        let bw = body_w(lt.number);
         let ring = R {
             x: r.x - 1.0,
             y: r.y - 1.0,
@@ -54,7 +57,13 @@ pub(super) fn draw(out: &mut Scene, cx: &Ctx, selected: Option<TrainId>) {
             h: r.h + 2.0,
         };
         cx.rect(&mut out.list, ring, p.bg);
-        if matches!(t.tag, TagResolution::MisTagged(_)) {
+        let mistagged = lt.members.iter().any(|id| {
+            cx.snap
+                .trains
+                .get(id)
+                .is_some_and(|t| matches!(t.tag, TagResolution::MisTagged(_)))
+        });
+        if mistagged {
             cx.outline(&mut out.list, ring, 1.0, p.fail);
         }
         cx.rect(&mut out.list, R { w: bw, ..r }, color);
@@ -74,7 +83,7 @@ pub(super) fn draw(out: &mut Scene, cx: &Ctx, selected: Option<TrainId>) {
         draw_text(
             &mut out.list,
             cx.v,
-            &format_train_number(t.number),
+            &format_train_number(lt.number),
             r.x + 2.0,
             r.y + 1.0,
             Cut::C5x7,
@@ -102,13 +111,11 @@ pub(super) fn draw(out: &mut Scene, cx: &Ctx, selected: Option<TrainId>) {
             w: r.w + 2.0 * HIT_PAD,
             h: r.h + 2.0 * HIT_PAD,
         };
-        out.hits.push((cx.v.rect(hit), Hit::Train(t.id)));
+        out.hits.push((cx.v.rect(hit), Hit::Train(lt.lead)));
     }
 
-    if let Some(t) = selected.and_then(|id| cx.snap.trains.get(&id))
-        && cx.layout.tracks.contains_key(&t.track)
-    {
-        let r = tag_rect(cx.layout, t);
+    if let Some(g) = selected.and_then(|id| cx.layout.geom_of(id)) {
+        let r = tag_rect_in(g);
         let sel = R {
             x: r.x - 4.0,
             y: r.y - 3.5,
