@@ -168,7 +168,7 @@ mod tests {
                 palette: PaletteKind::Matte,
                 reduced_motion: false,
             });
-            let layout = board_layout(snap, &view.expanded);
+            let layout = board_layout(snap, 1600.0);
             on_input(view, &scene, snap, &layout, (1600.0, 900.0), 0.0, ev);
         }
     }

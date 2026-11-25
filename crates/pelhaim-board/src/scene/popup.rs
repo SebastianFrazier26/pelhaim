@@ -354,18 +354,16 @@ pub fn plan(inp: &SceneInput, layout: &Layout) -> Option<PopupPlan> {
     let (left, top) = (MARGIN, MARGIN);
     let right = ov.w - MARGIN;
     let bottom = console::geom(inp).strip.y - MARGIN;
-    let tag = train
-        .filter(|t| layout.tracks.contains_key(&t.track))
-        .map(|t| {
-            let s = inp.view.view().rect(tag_rect(layout, t));
-            let k = ov.v.k;
-            R {
-                x: s.x / k,
-                y: s.y / k,
-                w: s.w / k,
-                h: s.h / k,
-            }
-        });
+    let tag = train.filter(|t| layout.geom_of(t.id).is_some()).map(|t| {
+        let s = inp.view.view().rect(tag_rect(layout, t));
+        let k = ov.v.k;
+        R {
+            x: s.x / k,
+            y: s.y / k,
+            w: s.w / k,
+            h: s.h / k,
+        }
+    });
     let (x, y) = match tag {
         Some(tr) => {
             let below = tr.y + tr.h + TAG_GAP;

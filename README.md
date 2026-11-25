@@ -19,20 +19,21 @@ This build ships **Observe only**.
 ## What the board shows
 
 - **Lines** are projects from your config, in `order`, then lines pelhaim made for repositories and tags it found. **DISPATCH** is always the top row: a one-line strip, `DISPATCH · 6 agents running`, counting the agents your orchestrator has running. The orchestrator itself draws no train, but its questions still pop up. **UNSORTED** is the bottom band and holds sessions pelhaim cannot place.
-- **Trains** are sessions (Claude Code sessions and subagents, Codex rollouts). An orchestrator's subagents appear on their own project lines. A train steps one block per tool call, on a track of bounded length.
-- **Stations** are milestones the agent reports with a marker line (see below). Prompts never make stations. At most `max_stations` show per track (default 5); older ones fold into `+N earlier`. The station a train is running to shows its arrival clock, `ARR 14:52`, which turns amber when overdue.
+- **Each line has its own colour**, like a subway map, and runs most of the way across the window with 45° turns. No two lines share a colour (until there are more than 12). The colour comes from the project's slug, or from `color` in its `[[project]]` (a palette name: rose, orange, ochre, olive, green, jade, teal, cyan, blue, indigo, violet, magenta; or `#RRGGBB`). The line is full colour behind its train and dimmed ahead of it. State never recolours a line: it shows on the train's tag and the stations.
+- **One train per line.** Every session on a project (Claude Code sessions and subagents, Codex rollouts) folds into that line's single train. The tag shows the earliest still-running session's number and the most urgent state among them: waiting on you, then failed, working, stalled, idle, done. The inset and the accessibility name list the agents inside. An orchestrator's subagents join their own project's train.
+- **Stations** are milestones the agents report with a marker line (see below), every agent's on the one line, in time order. Prompts never make stations. At most `max_stations` show per line (default 5); older ones fold into `+N earlier`. The train runs to the oldest station still in progress, which shows its arrival clock, `ARR 14:52`, amber when overdue.
 
 Colour legend (default `matte` palette):
 
 | Colour | Meaning |
 |---|---|
 | green `#76A96F` | working |
-| dark green `#466C41` | cleared route ahead of a working train |
 | yellow `#CCC984` | waiting on you: a question, a permission prompt, a stall |
 | red `#BF6661` | failed |
-| purple `#A86AB8` | forked / detached |
 | grey `#85889A` | done |
 | pale teal `#99B5B7` | idle |
+
+These are the train tag and station colours. Line colours are darker, so a tag always stands out from its line. A station is a small square on the line: filled in the train's state colour while the train stands at it, otherwise a ring, grey once done, amber when overdue.
 
 A red outline on a train's tag means a mis-tag (a slug not in your config, with `auto_projects = false`). A small yellow badge on a line label counts that project's open decisions in `DECISION-LOG.md`; a ⚠ tick means a session was written by a CLI version newer than the tested ones (`pelhaim doctor` lists them).
 
@@ -81,6 +82,7 @@ name = "SafeAscent"
 path = "~/Developer/SafeAscent" # optional: sessions in this repo land here
 order = 1
 log_section = "SafeAscent" # heading in DECISION-LOG.md, default: name
+color = "teal"             # optional line colour: a palette name or "#RRGGBB"; default from the slug
 
 [dispatch]
 sessions = []              # session ids drawn on DISPATCH
@@ -97,7 +99,7 @@ write = "on_click"         # on_click | off
 [board]
 palette = "matte"          # matte | film | high_contrast
 motion = "full"            # full | reduced
-max_stations = 5           # stations shown per track (1–20)
+max_stations = 5           # stations shown per line (1–20)
 auto_projects = true       # place untagged sessions by their repo; draw lines for unknown repos and tags
 ```
 

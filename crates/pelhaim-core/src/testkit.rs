@@ -28,6 +28,7 @@ pub fn cfg(slugs: &[&str]) -> EngineConfig {
                 name: s.to_uppercase(),
                 order: i as i32,
                 path: None,
+                color: None,
             })
             .collect(),
         ..EngineConfig::default()

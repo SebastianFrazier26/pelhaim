@@ -1,7 +1,8 @@
 use pelhaim_core::{Snapshot, format_train_number, truncate_chars};
 
 use super::{
-    Hit, Ov, Scene, SceneInput, lamp, popup, state_words, station_title, train_line, tray,
+    Hit, Ov, Scene, SceneInput, agents_words, lamp, line_train_of, popup, state_text, state_words,
+    station_title, train_line, tray,
 };
 use crate::color::Rgba;
 use crate::display::R;
@@ -55,18 +56,36 @@ pub fn status_items(snap: &Snapshot, view: &ViewState) -> Vec<(String, StatusTon
     out
 }
 
-/// The one-line status of the selected train, shown in the empty console (F34).
+/// The one-line status of the selected line train, shown in the empty console (F34).
 pub fn selection_status(snap: &Snapshot, view: &ViewState) -> Option<String> {
-    let t = snap.trains.get(&view.selected?)?;
+    let id = view.selected?;
+    let t = snap.trains.get(&id)?;
+    let Some(lt) = line_train_of(snap, id) else {
+        let mut s = format!(
+            "{} · {} · {}",
+            format_train_number(t.number),
+            train_line(snap, t),
+            state_words(t, snap)
+        );
+        if let Some(st) = station_title(snap, t) {
+            s.push_str(" · ");
+            s.push_str(&st);
+        }
+        return Some(s);
+    };
     let mut s = format!(
         "{} · {} · {}",
-        format_train_number(t.number),
+        format_train_number(lt.number),
         train_line(snap, t),
-        state_words(t, snap)
+        state_text(lt.state(snap), snap)
     );
-    if let Some(st) = station_title(snap, t) {
+    if lt.members.len() > 1 {
         s.push_str(" · ");
-        s.push_str(&st);
+        s.push_str(&agents_words(lt.members.len()));
+    }
+    if let Some(st) = lt.next.and_then(|i| snap.stations.get(&lt.stations[i])) {
+        s.push_str(" · ");
+        s.push_str(&st.title);
     }
     Some(s)
 }

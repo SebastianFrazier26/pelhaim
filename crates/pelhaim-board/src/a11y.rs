@@ -2,7 +2,9 @@ use pelhaim_core::{AlertKind, AlertState, Snapshot, TagResolution, Train, format
 
 use crate::input::ViewState;
 use crate::scene::popup::pick_projects;
-use crate::scene::{line_name, state_words, train_line};
+use crate::scene::{
+    LineTrain, agents_words, line_name, line_trains, state_text, state_words, train_line,
+};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct A11yNode {
@@ -40,6 +42,47 @@ pub fn train_name(snap: &Snapshot, t: &Train) -> String {
     s
 }
 
+/// A line train: its lead's number, the shown state, and the agents inside.
+pub fn line_train_name(snap: &Snapshot, lt: &LineTrain) -> String {
+    let lead = lt.lead(snap);
+    let mut s = format!(
+        "Train {}, {}, {}",
+        format_train_number(lt.number),
+        train_line(snap, lead),
+        state_text(lt.state(snap), snap)
+    );
+    let members: Vec<&Train> = lt
+        .members
+        .iter()
+        .filter_map(|id| snap.trains.get(id))
+        .collect();
+    if members.len() > 1 {
+        let inside: Vec<String> = members
+            .iter()
+            .map(|m| {
+                format!(
+                    "{} {} ({})",
+                    format_train_number(m.number),
+                    m.label,
+                    state_words(m, snap)
+                )
+            })
+            .collect();
+        s.push_str(&format!(
+            ", {}: {}",
+            agents_words(members.len()),
+            inside.join("; ")
+        ));
+    }
+    for m in &members {
+        // F31: a mis-tag is otherwise only a red outline.
+        if let TagResolution::MisTagged(slug) = &m.tag {
+            s.push_str(&format!(", tag: {slug} (unknown project)"));
+        }
+    }
+    s
+}
+
 /// The window node first; every other node is reachable from it through `children`.
 pub fn a11y_tree(snap: &Snapshot, view: &ViewState) -> Vec<A11yNode> {
     let node = |id: String, role, name: String, children| A11yNode {
@@ -55,15 +98,19 @@ pub fn a11y_tree(snap: &Snapshot, view: &ViewState) -> Vec<A11yNode> {
         vec![],
     )];
     let mut top = Vec::new();
+    let trains = line_trains(snap);
     for (li, line) in snap.lines.iter().enumerate() {
         let id = format!("line:{li}");
         let mut kids = Vec::new();
-        for track in &line.tracks {
-            for t in snap.trains.values().filter(|t| t.track == *track) {
-                let tid = format!("train:{}", t.id.0);
-                kids.push(tid.clone());
-                out.push(node(tid, A11yRole::Train, train_name(snap, t), vec![]));
-            }
+        for lt in trains.iter().filter(|lt| lt.line == line.key) {
+            let tid = format!("train:{}", lt.lead.0);
+            kids.push(tid.clone());
+            out.push(node(
+                tid,
+                A11yRole::Train,
+                line_train_name(snap, lt),
+                vec![],
+            ));
         }
         top.push(id.clone());
         out.push(node(id, A11yRole::Group, line.name.clone(), kids));

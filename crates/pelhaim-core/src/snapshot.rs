@@ -21,6 +21,13 @@ pub struct Snapshot {
     pub keep_awake: KeepAwakeStatus,
     /// The local offset arrival clocks are shown in.
     pub utc_offset_secs: i32,
+    /// `[board].max_stations`: the board folds a line's merged stations to this many.
+    #[serde(default = "default_max_stations")]
+    pub max_stations: u32,
+}
+
+fn default_max_stations() -> u32 {
+    5
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
@@ -34,4 +41,7 @@ pub struct LineView {
     pub active: bool,
     /// DISPATCH only: active trains descended from an orchestrator session.
     pub running: u32,
+    /// `[[project]].color`, unparsed: the board owns the line palette.
+    #[serde(default)]
+    pub color: Option<String>,
 }

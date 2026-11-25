@@ -11,7 +11,9 @@ use crate::cards::{CardRow, Mark};
 use crate::console_cmd::{ConsoleCmd, parse_console};
 use crate::display::R;
 use crate::scene::popup::pick_projects;
-use crate::scene::{AlertButton, Hit, InsetAction, Layout, Scene, TRACK_PITCH, inset};
+use crate::scene::{
+    AlertButton, Hit, InsetAction, Layout, Scene, TRACK_PITCH, inset, line_train_of,
+};
 use crate::textinput::TextInput;
 use crate::view::{MAX_ZOOM, MIN_ZOOM, View, fit};
 
@@ -20,8 +22,8 @@ pub struct ViewState {
     pub k: f32,
     pub ox: f32,
     pub oy: f32,
+    /// Any session train of a line train; the line train is what is selected.
     pub selected: Option<TrainId>,
-    pub expanded: BTreeSet<LineKey>,
     pub hover: Option<Hit>,
     pub popup: Option<PopupState>,
     pub inset: Option<InsetState>,
@@ -67,7 +69,6 @@ impl Default for ViewState {
             ox: 0.0,
             oy: 0.0,
             selected: None,
-            expanded: BTreeSet::new(),
             hover: None,
             popup: None,
             inset: None,
@@ -373,12 +374,12 @@ fn board_key(
         }
         UiKey::Char('0') => view.set_view(fit(layout.content, viewport)),
         UiKey::Char('f' | 'F') => {
-            if let Some(r) = selection_rect(view, snap, layout) {
+            if let Some(r) = selection_rect(view, layout) {
                 view.set_view(fit(r, viewport));
             }
         }
-        UiKey::Char('j' | 'J') => step_selection(view, snap, layout, 1),
-        UiKey::Char('k' | 'K') => step_selection(view, snap, layout, -1),
+        UiKey::Char('j' | 'J') => step_selection(view, layout, 1),
+        UiKey::Char('k' | 'K') => step_selection(view, layout, -1),
         UiKey::Space => {
             view.paused = !view.paused;
             view.frozen = view.paused.then(|| Arc::new(snap.clone()));
@@ -534,37 +535,51 @@ fn step(
     )
 }
 
-/// Drawn trains in layout order: line order, then track order within the line.
-fn layout_order(snap: &Snapshot, layout: &Layout) -> Vec<TrainId> {
-    snap.lines
-        .iter()
-        .flat_map(|l| &l.tracks)
-        .filter(|t| layout.tracks.contains_key(t))
-        .flat_map(|track| snap.trains.values().filter(move |t| t.track == *track))
-        .map(|t| t.id)
-        .collect()
+/// Drawn line trains in board order, by lead.
+fn layout_order(layout: &Layout) -> Vec<TrainId> {
+    layout.geoms.iter().map(|g| g.train.lead).collect()
 }
 
-fn step_selection(view: &mut ViewState, snap: &Snapshot, layout: &Layout, dir: i32) {
-    let order = layout_order(snap, layout);
-    if let Some(i) = step(order.iter().copied(), view.selected, dir < 0) {
+fn step_selection(view: &mut ViewState, layout: &Layout, dir: i32) {
+    let order = layout_order(layout);
+    let current = view
+        .selected
+        .and_then(|id| layout.geom_of(id))
+        .map(|g| g.train.lead);
+    if let Some(i) = step(order.iter().copied(), current, dir < 0) {
         view.selected = Some(order[i]);
     }
 }
 
-fn selection_rect(view: &ViewState, snap: &Snapshot, layout: &Layout) -> Option<R> {
-    let t = snap.trains.get(&view.selected?)?;
-    let g = layout.tracks.get(&t.track)?;
-    let end = g.blocks.last().map_or(g.x0, |&(x, w)| x + w);
+fn selection_rect(view: &ViewState, layout: &Layout) -> Option<R> {
+    let g = layout.geom_of(view.selected?)?;
+    let (top, bottom) = g
+        .pts
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
     Some(R {
-        x: g.x0,
-        y: g.y - TRACK_PITCH * 0.75,
-        w: end - g.x0,
-        h: TRACK_PITCH,
+        x: g.x0(),
+        y: top - TRACK_PITCH * 0.75,
+        w: g.x1() - g.x0(),
+        h: bottom - top + TRACK_PITCH,
     })
 }
 
-/// The alert a yellow tag opens: the one it is waiting on, else its oldest open alert.
+/// The alert a yellow tag opens: the one its shown session is waiting on, else the line
+/// train's oldest open alert.
+fn line_alert(snap: &Snapshot, t: TrainId) -> Option<AlertId> {
+    let Some(lt) = line_train_of(snap, t) else {
+        return train_alert(snap, t);
+    };
+    train_alert(snap, lt.shown).or_else(|| {
+        snap.alerts
+            .iter()
+            .find(|a| a.train.is_some_and(|id| lt.has(id)) && a.is_open())
+            .map(|a| a.id.clone())
+    })
+}
+
+/// The alert a session's tag opens: the one it is waiting on, else its oldest open alert.
 fn train_alert(snap: &Snapshot, t: TrainId) -> Option<AlertId> {
     let train = snap.trains.get(&t)?;
     if let TrainState::Waiting(id) = &train.state
@@ -587,19 +602,13 @@ fn click(view: &mut ViewState, snap: &Snapshot, now_s: f64, h: Hit, double: bool
                     train: t,
                     opened_s: now_s,
                 });
-            } else if snap
-                .trains
-                .get(&t)
-                .is_some_and(|tr| matches!(tr.state, TrainState::Waiting(_) | TrainState::Stalled))
-                && let Some(id) = train_alert(snap, t)
+            } else if line_train_of(snap, t)
+                .map(|lt| lt.state(snap).clone())
+                .or_else(|| snap.trains.get(&t).map(|tr| tr.state.clone()))
+                .is_some_and(|s| matches!(s, TrainState::Waiting(_) | TrainState::Stalled))
+                && let Some(id) = line_alert(snap, t)
             {
                 return open_alert(view, snap, &id);
-            }
-            vec![]
-        }
-        Hit::Stub(key) => {
-            if !view.expanded.remove(&key) {
-                view.expanded.insert(key);
             }
             vec![]
         }

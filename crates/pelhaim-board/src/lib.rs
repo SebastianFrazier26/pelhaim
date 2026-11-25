@@ -18,10 +18,14 @@ pub use display::{DisplayList, P, Prim, R};
 pub use input::{
     InsetState, Mods, PopupState, UiAction, UiInput, UiKey, ViewState, on_input, sync,
 };
-pub use palette::{BlockState, Palette, PaletteKind, block_color, palette};
+pub use palette::{
+    BlockState, LineColor, Palette, PaletteKind, assign_line_colors, block_color, line_color,
+    line_rgba, palette, parse_line_color,
+};
 pub use scene::{
-    AlertButton, Hit, InsetAction, Layout, LineBox, Scene, SceneInput, TrackGeom, board_layout,
-    build_board, build_overlays, build_scene, state_words, tag_rect,
+    AlertButton, Hit, InsetAction, Layout, LineBox, LineGeom, LineTrain, Scene, SceneInput,
+    board_layout, build_board, build_overlays, build_scene, line_train_of, line_trains, state_rank,
+    state_words, tag_rect,
 };
 pub use textinput::TextInput;
 pub use view::{View, fit};
