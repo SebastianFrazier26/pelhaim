@@ -78,8 +78,12 @@ mod tests {
                 .find(|(_, n)| n.label() == Some(want))
                 .map(|(id, n)| (*id, n.role()))
         };
-        let (train, role) =
-            named("Train 1423, SAFEASCENT, waiting on you: Proceed to C1?").expect("train node");
+        let (train, role) = named(
+            "Train 1423, SAFEASCENT, waiting on you: Proceed to C1?, 2 agents: \
+             1423 Claude session (waiting on you: Proceed to C1?); \
+             1424 Risk model check (working)",
+        )
+        .expect("train node");
         assert_eq!(role, Role::ListItem);
         let line = up
             .nodes

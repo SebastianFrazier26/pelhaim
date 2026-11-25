@@ -3,8 +3,8 @@ use pelhaim_core::{
 };
 
 use super::{
-    Hit, InsetAction, Layout, Ov, Scene, SceneInput, block_state, build_board, popup, state_words,
-    tag_rect, train_line,
+    Hit, InsetAction, Layout, Ov, Scene, SceneInput, agents_words, block_state, build_board,
+    line_train_of, popup, state_text, state_words, tag_rect, train_line,
 };
 use crate::color::Rgba;
 use crate::display::{Prim, R};
@@ -28,45 +28,83 @@ pub fn session_id(t: &Train) -> &str {
     }
 }
 
-/// The right-hand text, top to bottom, each line with its colour.
+/// The right-hand text, top to bottom, each line with its colour: the line train, the
+/// agents folded into it, then `t`'s own session details and the line's stations.
 pub fn info_lines(snap: &Snapshot, t: &Train, p: &Palette) -> Vec<(String, Rgba)> {
+    let lt = line_train_of(snap, t.id);
+    let (number, state) = lt
+        .as_ref()
+        .map_or((t.number, &t.state), |lt| (lt.number, lt.state(snap)));
     let mut out = vec![
         (
-            format!(
-                "{} · {}",
-                format_train_number(t.number),
-                train_line(snap, t)
-            ),
+            format!("{} · {}", format_train_number(number), train_line(snap, t)),
             p.label,
         ),
         (t.label.clone(), p.label),
-        (state_words(t, snap), block_color(p, block_state(&t.state))),
+        (state_text(state, snap), block_color(p, block_state(state))),
     ];
+    let members: Vec<&Train> = lt
+        .as_ref()
+        .map(|lt| {
+            lt.members
+                .iter()
+                .filter_map(|id| snap.trains.get(id))
+                .collect()
+        })
+        .unwrap_or_else(|| vec![t]);
+    if members.len() > 1 {
+        out.push((format!("{} inside:", agents_words(members.len())), p.glyph));
+        for m in &members {
+            out.push((
+                format!(
+                    "{} {} · {}",
+                    format_train_number(m.number),
+                    m.label,
+                    state_words(m, snap)
+                ),
+                block_color(p, block_state(&m.state)),
+            ));
+        }
+    }
     // F31: a mis-tagged session shows the slug it asked for.
-    if let TagResolution::MisTagged(slug) = &t.tag {
-        out.push((format!("tag: {slug} (unknown project)"), p.fail));
+    for m in &members {
+        if let TagResolution::MisTagged(slug) = &m.tag {
+            out.push((format!("tag: {slug} (unknown project)"), p.fail));
+        }
     }
     out.push((
         format!("cwd {}", t.cwd.as_deref().unwrap_or("unknown")),
         p.glyph,
     ));
     out.push((format!("session {}", session_id(t)), p.glyph));
-    if let Some(track) = snap.tracks.get(&t.track) {
-        if track.folded > 0 {
-            out.push((format!("+{} earlier", track.folded), p.done));
-        }
-        for st in track.stations.iter().filter_map(|id| snap.stations.get(id)) {
-            let (mark, c) = match st.status {
-                StationStatus::Done => ('☑', p.done),
-                StationStatus::Active if st.overdue(snap.now) => ('▸', p.wait),
-                StationStatus::Active => ('▸', p.work),
-            };
-            let text = match super::lines::arrival_text(snap, st) {
-                Some(arr) => format!("{mark} {} {arr}", st.title),
-                None => format!("{mark} {}", st.title),
-            };
-            out.push((text, c));
-        }
+    let (stations, folded, next) = match &lt {
+        Some(lt) => (lt.stations.clone(), lt.folded, lt.next),
+        None => match snap.tracks.get(&t.track) {
+            Some(tr) => (tr.stations.clone(), tr.folded, None),
+            None => (vec![], 0, None),
+        },
+    };
+    if folded > 0 {
+        out.push((format!("+{folded} earlier"), p.done));
+    }
+    for (i, st) in stations
+        .iter()
+        .filter_map(|id| snap.stations.get(id))
+        .enumerate()
+    {
+        let (mark, c) = match st.status {
+            StationStatus::Done => ('☑', p.done),
+            StationStatus::Active if st.overdue(snap.now) => ('▸', p.wait),
+            StationStatus::Active => ('▸', p.work),
+        };
+        let arr = (lt.is_none() || next == Some(i))
+            .then(|| super::lines::arrival_text(snap, st))
+            .flatten();
+        let text = match arr {
+            Some(arr) => format!("{mark} {} {arr}", st.title),
+            None => format!("{mark} {}", st.title),
+        };
+        out.push((text, c));
     }
     for l in &t.tail[t.tail.len().saturating_sub(TAIL_LINES)..] {
         out.push((l.clone(), p.done));

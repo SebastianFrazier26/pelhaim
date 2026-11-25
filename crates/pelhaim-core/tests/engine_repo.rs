@@ -120,6 +120,7 @@ fn repo_matches_a_configured_path_before_its_name() {
             name: "Safe".into(),
             order: 1,
             path: Some(PathBuf::from("/r/SafeAscent")),
+            color: None,
         }],
         ..EngineConfig::default()
     };

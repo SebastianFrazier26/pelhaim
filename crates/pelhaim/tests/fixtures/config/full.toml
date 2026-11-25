@@ -15,6 +15,7 @@ path = "~/Developer/safeascent"
 repo = "SebastianFrazier26/safeascent"
 order = 1
 log_section = "SafeAscent"
+color = "teal"
 
 [[project]]
 slug = "cabn"

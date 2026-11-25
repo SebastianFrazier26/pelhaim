@@ -21,8 +21,8 @@ fn id(s: &str) -> AlertId {
     AlertId(s.into())
 }
 
-fn layout(snap: &Snapshot, view: &ViewState) -> Layout {
-    board_layout(snap, &view.expanded)
+fn layout(snap: &Snapshot, _view: &ViewState) -> Layout {
+    board_layout(snap, 1600.0)
 }
 
 fn scene(snap: &Snapshot, view: &ViewState) -> Scene {
@@ -311,15 +311,20 @@ fn jk_next_prev_in_layout_order() {
     let snap = sample_board();
     let mut view = ViewState::default();
     let mut order = Vec::new();
-    for _ in 0..8 {
+    for _ in 0..6 {
         key(&mut view, &snap, UiKey::Char('j'));
         order.push(view.selected.unwrap().0);
     }
     assert_eq!(
         order,
-        [7, 8, 4, 2, 3, 5, 6, 7],
-        "the orchestrator (1) draws no train"
+        [7, 2, 3, 5, 6, 7],
+        "one line train each, by lead; the orchestrator (1) draws no train"
     );
+    // From a non-lead member, J steps on from its line train.
+    view.selected = Some(TrainId(8));
+    key(&mut view, &snap, UiKey::Char('j'));
+    assert_eq!(view.selected, Some(TrainId(2)));
+    view.selected = Some(TrainId(7));
     key(&mut view, &snap, UiKey::Char('k'));
     assert_eq!(view.selected, Some(TrainId(6)));
     view.selected = None;
@@ -329,7 +334,7 @@ fn jk_next_prev_in_layout_order() {
 
 #[test]
 fn click_yellow_tag_opens_alert_double_click_opens_inset() {
-    let snap = sample_board();
+    let mut snap = sample_board();
     let mut view = ViewState::default();
     click_hit(&mut view, &snap, Hit::Train(TrainId(2)), false);
     assert_eq!(
@@ -341,9 +346,17 @@ fn click_yellow_tag_opens_alert_double_click_opens_inset() {
     assert_eq!(view.selected, Some(TrainId(7)));
     assert_eq!(popup_id(&view), Some(QUESTION));
 
+    // Ethica's line train shows its working subagent (2) over stalled E1 (4).
     view.popup = None;
-    click_hit(&mut view, &snap, Hit::Train(TrainId(4)), false);
-    assert_eq!(popup_id(&view), Some(STALLED), "stalled is yellow too");
+    click_hit(&mut view, &snap, Hit::Train(TrainId(2)), false);
+    assert!(view.popup.is_none());
+    snap.trains.get_mut(&TrainId(2)).unwrap().state = TrainState::Idle;
+    click_hit(&mut view, &snap, Hit::Train(TrainId(2)), false);
+    assert_eq!(
+        popup_id(&view),
+        Some(STALLED),
+        "stalled is yellow too, and opens the stalled member's alert"
+    );
 
     view.popup = None;
     click_hit(&mut view, &snap, Hit::Train(TrainId(2)), true);
@@ -623,8 +636,8 @@ fn zero_fits_and_cmd_plus_zooms_clamped() {
     view.selected = Some(TrainId(7));
     key(&mut view, &snap, UiKey::Char('F'));
     let l = layout(&snap, &view);
-    let g = &l.tracks[&snap.trains[&TrainId(7)].track];
-    let y = view.view().y(g.y);
+    let g = l.geom_of(TrainId(7)).unwrap();
+    let y = view.view().y(g.pts[0].1);
     assert!(view.k > 0.25 && y > 0.0 && y < VP.1);
 
     // Pointer zoom keeps the point under the cursor.
@@ -767,28 +780,12 @@ fn decisions_command_lists_up_to_ten() {
 }
 
 #[test]
-fn lamp_pauses_keep_awake_and_stub_toggles_expanded() {
-    let mut snap = sample_board();
+fn lamp_pauses_keep_awake() {
+    let snap = sample_board();
     let mut view = ViewState::default();
     assert_eq!(
         click_hit(&mut view, &snap, Hit::Lamp, false),
         [UiAction::PauseKeepAwake]
-    );
-
-    let ethica = snap
-        .lines
-        .iter_mut()
-        .find(|l| l.key == LineKey::Project("ethica".into()))
-        .unwrap();
-    ethica.tracks.extend((100..104).map(pelhaim_core::TrackId));
-    let key = LineKey::Project("ethica".into());
-    click_hit(&mut view, &snap, Hit::Stub(key.clone()), false);
-    assert!(view.expanded.contains(&key));
-    assert!(
-        !scene(&snap, &view)
-            .hits
-            .iter()
-            .any(|(_, h)| h == &Hit::Stub(key.clone()))
     );
 }
 
@@ -837,7 +834,8 @@ fn a11y_train_name_format() {
     assert_eq!(t7.role, A11yRole::Train);
     assert_eq!(
         t7.name,
-        "Train 1423, SAFEASCENT, waiting on you: Proceed to C1?"
+        "Train 1423, SAFEASCENT, waiting on you: Proceed to C1?, 2 agents: \
+         1423 Claude session (waiting on you: Proceed to C1?); 1424 Risk model check (working)"
     );
     assert_eq!(
         by_id("train:5").name,
@@ -852,7 +850,12 @@ fn a11y_train_name_format() {
         .collect();
     assert_eq!(groups.len(), snap.lines.len());
     let ethica = groups.iter().find(|g| g.name == "ETHICA").unwrap();
-    assert_eq!(ethica.children, ["train:4", "train:2"]);
+    assert_eq!(ethica.children, ["train:2"], "one train per line");
+    assert!(
+        by_id("train:2").name.contains("2 agents: "),
+        "{}",
+        by_id("train:2").name
+    );
 
     let dialog = tree.iter().find(|n| n.role == A11yRole::Dialog).unwrap();
     assert!(dialog.name.contains("Proceed to C1?"), "{}", dialog.name);

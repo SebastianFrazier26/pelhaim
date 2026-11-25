@@ -248,7 +248,7 @@ pub struct LineRow {
 /// F30: the default view is fitted to the board before drawing.
 pub fn scene_dump(snap: &Snapshot, opts: &AppOptions) -> SceneDump {
     let mut view = ViewState::default();
-    let layout = board_layout(snap, &view.expanded);
+    let layout = board_layout(snap, DUMP_VIEWPORT.0);
     let v = fit(layout.content, DUMP_VIEWPORT);
     (view.k, view.ox, view.oy) = (v.k, v.ox, v.oy);
     let scene = build_scene(&SceneInput {
@@ -420,6 +420,7 @@ mod tests {
             repo: None,
             order: 1,
             log_section: None,
+            color: None,
         });
         let phone = Origin::Remote {
             device_id: "phone".into(),

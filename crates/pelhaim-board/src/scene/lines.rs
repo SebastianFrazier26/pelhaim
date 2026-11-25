@@ -1,265 +1,333 @@
-use std::collections::{BTreeMap, BTreeSet};
+use pelhaim_core::{LineKey, LineView, Snapshot, Station, StationStatus, TrainId};
 
-use pelhaim_core::{
-    LEG_BLOCKS, LineKey, LineView, Snapshot, Station, StationStatus, TrackId, Train, TrainState,
-};
-
-use super::{
-    BLOCK_GAP, BLOCK_LENGTHS, BUNDLE_GAP, Ctx, FOLDED_H, Hit, LABEL_PX, LABEL_ROW_H,
-    MAX_VISIBLE_TRACKS, STUB_ROW_H, Scene, TRACK_PITCH, TRACK_THICK, TRACK_X0,
-};
-use crate::color::Rgba;
+use super::fold::{LineTrain, line_trains};
+use super::{BLOCK_GAP, BLOCK_LENGTHS, BUNDLE_GAP, Ctx, FOLDED_H, LABEL_PX, LABEL_ROW_H, Scene};
+use super::{TRACK_THICK, TRACK_X0};
+use crate::color::{Rgba, oklab_mute};
 use crate::display::R;
-use crate::font::{Cut, advance, draw_text, line_height, text_width};
+use crate::font::{Cut, advance, draw_text, text_width};
+use crate::palette::{LineColor, assign_line_colors, slug_hash};
+
+/// Owner, 2026-11-24: lines run most of the way across the screen. Each starts this
+/// fraction of the board width in from the left and ends as far in from the right.
+pub const LINE_INSET_FRAC: f32 = 0.06;
+/// Below this the board is laid out as if this wide, so labels keep some room.
+pub const MIN_BOARD_W: f32 = 480.0;
+/// A line's path steps between this many levels, `LEVEL_STEP` apart, on 45° diagonals.
+pub const LEVELS: u64 = 3;
+pub const LEVEL_STEP: f32 = 10.0;
+/// From a line's top: the label row, then room for station labels above the top level.
+pub const BASE_Y: f32 = LABEL_ROW_H + STATION_LABEL_UP;
+pub const LINE_H: f32 = BASE_Y + (LEVELS - 1) as f32 * LEVEL_STEP + 9.0;
+/// The station label (5x7 at 1.3, 9.1 tall) tops out 21 units above the track under it.
+pub const STATION_LABEL_UP: f32 = 21.0;
+pub const MARKER: f32 = 7.0;
+const MARKER_HOLE: f32 = 3.0;
+const FOLDED_THICK: f32 = 1.5;
+const STAR_OFFSET: f32 = 7.0;
+const STAR_HALF: f32 = 3.5;
+const STAR_WIDTH: f32 = 1.4;
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct LineBox {
     pub key: LineKey,
     pub top: f32,
     pub h: f32,
+    pub color: LineColor,
 }
 
+/// A drawn line: its path, its block chain and its one train, all in board units.
+/// Positions along the line are arc lengths `s` from its start.
 #[derive(Clone, PartialEq, Debug)]
-pub struct TrackGeom {
-    pub y: f32,
-    pub x0: f32,
+pub struct LineGeom {
+    pub key: LineKey,
+    pub color: LineColor,
+    /// Vertices, x strictly increasing: level runs joined by 45° diagonals.
+    pub pts: Vec<(f32, f32)>,
     pub blocks: Vec<(f32, f32)>,
-    pub station_x: Vec<f32>,
+    pub station_s: Vec<f32>,
+    pub head_s: f32,
+    pub train: LineTrain,
 }
 
-/// Board units. `tracks` holds only the tracks drawn: folded lines and tracks behind a
-/// "+N" stub have no geometry.
-#[derive(Clone, PartialEq, Debug)]
-pub struct Layout {
-    pub lines: Vec<LineBox>,
-    pub tracks: BTreeMap<TrackId, TrackGeom>,
-    pub content: R,
-}
+impl LineGeom {
+    pub fn len(&self) -> f32 {
+        self.pts.windows(2).map(|w| seg_len(w[0], w[1])).sum()
+    }
 
-// The station label (5x7 at 1.3, 9.1 tall) tops out 21 units above its track.
-const TRACK_Y_IN_SLOT: f32 = 21.0;
-const STATION_LABEL_UP: f32 = 9.0 + 12.0;
-const PLATFORM_UP: f32 = 9.0;
-const PLATFORM_W: f32 = 33.0;
-const PLATFORM_H: f32 = 5.0;
-const FOLDED_LEN: f32 = 600.0;
-const FOLDED_THICK: f32 = 1.5;
-const STAR_OFFSET: f32 = 7.0;
-const STAR_HALF: f32 = 3.5;
-const STAR_WIDTH: f32 = 1.4;
-const FORK_STUB: f32 = 6.0;
-const FORK_TO_TRACK: f32 = 4.0;
-const TRAILING_IDLE_BLOCKS: usize = 2;
+    pub fn is_empty(&self) -> bool {
+        self.pts.len() < 2
+    }
 
-fn visible(line: &LineView, expanded: &BTreeSet<LineKey>) -> usize {
-    if expanded.contains(&line.key) {
-        line.tracks.len()
-    } else {
-        line.tracks.len().min(MAX_VISIBLE_TRACKS)
+    pub fn point_at(&self, s: f32) -> (f32, f32) {
+        let mut left = s.max(0.0);
+        for w in self.pts.windows(2) {
+            let l = seg_len(w[0], w[1]);
+            if left <= l {
+                let f = if l > 0.0 { left / l } else { 0.0 };
+                return (
+                    w[0].0 + (w[1].0 - w[0].0) * f,
+                    w[0].1 + (w[1].1 - w[0].1) * f,
+                );
+            }
+            left -= l;
+        }
+        *self.pts.last().expect("a path has points")
+    }
+
+    pub fn y_at(&self, x: f32) -> f32 {
+        for w in self.pts.windows(2) {
+            if x <= w[1].0 {
+                let dx = w[1].0 - w[0].0;
+                let f = if dx > 0.0 {
+                    ((x - w[0].0) / dx).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                return w[0].1 + (w[1].1 - w[0].1) * f;
+            }
+        }
+        self.pts.last().map_or(0.0, |p| p.1)
+    }
+
+    /// The highest point (least y) of the path over `[x0, x1]`.
+    pub fn min_y(&self, x0: f32, x1: f32) -> f32 {
+        self.pts
+            .iter()
+            .filter(|p| p.0 > x0 && p.0 < x1)
+            .map(|p| p.1)
+            .fold(self.y_at(x0).min(self.y_at(x1)), f32::min)
+    }
+
+    pub fn x0(&self) -> f32 {
+        self.pts[0].0
+    }
+
+    pub fn x1(&self) -> f32 {
+        self.pts[self.pts.len() - 1].0
+    }
+
+    pub fn station_xy(&self, i: usize) -> (f32, f32) {
+        self.point_at(self.station_s[i])
+    }
+
+    pub fn head(&self) -> (f32, f32) {
+        self.point_at(self.head_s)
+    }
+
+    /// The straight pieces of the path between arc lengths `s0` and `s1`.
+    pub fn pieces(&self, s0: f32, s1: f32) -> Vec<((f32, f32), (f32, f32))> {
+        let mut out = Vec::new();
+        let mut at = 0.0;
+        for w in self.pts.windows(2) {
+            let l = seg_len(w[0], w[1]);
+            let (a, b) = (s0.max(at), s1.min(at + l));
+            if b > a && l > 0.0 {
+                let p = |s: f32| {
+                    let f = (s - at) / l;
+                    (
+                        w[0].0 + (w[1].0 - w[0].0) * f,
+                        w[0].1 + (w[1].1 - w[0].1) * f,
+                    )
+                };
+                out.push((p(a), p(b)));
+            }
+            at += l;
+        }
+        out
     }
 }
 
-fn tan60() -> f32 {
-    60f32.to_radians().tan()
+fn seg_len(a: (f32, f32), b: (f32, f32)) -> f32 {
+    ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt()
 }
 
-fn block_count(snap: &Snapshot, id: TrackId) -> usize {
-    let legs = snap.tracks.get(&id).map_or(0, |t| t.stations.len()).max(1);
-    legs * usize::from(LEG_BLOCKS) + TRAILING_IDLE_BLOCKS
+/// Board units. `geoms` holds the drawn lines in board order; folded lines have none.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Layout {
+    pub lines: Vec<LineBox>,
+    pub geoms: Vec<LineGeom>,
+    pub width: f32,
+    pub content: R,
 }
 
-fn head_index(train: &Train, n: usize) -> usize {
-    let p = train.position;
-    (usize::from(p.leg) * usize::from(LEG_BLOCKS) + usize::from(p.block)).min(n - 1)
+impl Layout {
+    pub fn geom(&self, key: &LineKey) -> Option<&LineGeom> {
+        self.geoms.iter().find(|g| &g.key == key)
+    }
+
+    /// The line whose train folds in session train `id`.
+    pub fn geom_of(&self, id: TrainId) -> Option<&LineGeom> {
+        self.geoms.iter().find(|g| g.train.has(id))
+    }
+
+    pub fn line_x0(&self) -> f32 {
+        self.width * LINE_INSET_FRAC
+    }
+
+    pub fn line_x1(&self) -> f32 {
+        self.width * (1.0 - LINE_INSET_FRAC)
+    }
 }
 
-pub fn board_layout(snap: &Snapshot, expanded: &BTreeSet<LineKey>) -> Layout {
+fn seed(key: &LineKey) -> u64 {
+    match key {
+        LineKey::Project(s) => slug_hash(s),
+        LineKey::Unsorted => slug_hash("~unsorted"),
+        LineKey::Dispatch => slug_hash("~dispatch"),
+    }
+}
+
+/// Every line's colour, from the whole set at once so no two projects share one.
+pub fn line_colors(snap: &Snapshot) -> Vec<LineColor> {
+    let assigned = assign_line_colors(snap.lines.iter().filter_map(|l| match &l.key {
+        LineKey::Project(s) => Some((s.as_str(), l.color.as_deref())),
+        _ => None,
+    }));
+    snap.lines
+        .iter()
+        .map(|l| match &l.key {
+            LineKey::Project(s) => assigned[s],
+            _ => LineColor::Neutral,
+        })
+        .collect()
+}
+
+/// SplitMix64: a tiny deterministic stream, so a line's turns depend on its slug alone.
+fn next(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// 3–5 jogs between levels, each centred near an even division of the span, so the
+/// diagonals stay apart and x keeps increasing.
+pub fn line_path(key: &LineKey, x0: f32, x1: f32, base: f32) -> Vec<(f32, f32)> {
+    let mut st = seed(key);
+    let jogs = 3 + next(&mut st) % 3;
+    let mut level = next(&mut st) % LEVELS;
+    let y = |l: u64| base + l as f32 * LEVEL_STEP;
+    let span = x1 - x0;
+    let pitch = span / (jogs + 1) as f32;
+    let mut pts = vec![(x0, y(level))];
+    for i in 0..jogs {
+        let jitter = ((next(&mut st) % 1000) as f32 / 1000.0 - 0.5) * pitch * 0.5;
+        let c = x0 + pitch * (i + 1) as f32 + jitter;
+        let to = (level + 1 + next(&mut st) % (LEVELS - 1)) % LEVELS;
+        let dx = (to as f32 - level as f32).abs() * LEVEL_STEP;
+        pts.push((c - dx / 2.0, y(level)));
+        pts.push((c + dx / 2.0, y(to)));
+        level = to;
+    }
+    pts.push((x1, y(level)));
+    pts
+}
+
+fn blocks(key: &LineKey, len: f32) -> Vec<(f32, f32)> {
+    let mut i = (seed(key) % BLOCK_LENGTHS.len() as u64) as usize;
+    let mut s = 0.0;
+    let mut out = Vec::new();
+    while s < len {
+        let w = BLOCK_LENGTHS[i % BLOCK_LENGTHS.len()].min(len - s);
+        out.push((s, s + w));
+        s += w + BLOCK_GAP;
+        i += 1;
+    }
+    out
+}
+
+pub fn board_layout(snap: &Snapshot, width: f32) -> Layout {
+    let width = width.max(MIN_BOARD_W);
+    let (x0, x1) = (width * LINE_INSET_FRAC, width * (1.0 - LINE_INSET_FRAC));
+    let mut trains: Vec<LineTrain> = line_trains(snap);
     let mut lines = Vec::with_capacity(snap.lines.len());
-    let mut ys = BTreeMap::new();
+    let mut geoms = Vec::new();
     let mut top = 0.0;
-    let mut right: f32 = 0.0;
-    for line in &snap.lines {
-        let name_w = text_width(&line.name, Cut::C7x9, LABEL_PX);
-        right = right.max(TRACK_X0 + name_w);
+    for (line, color) in snap.lines.iter().zip(line_colors(snap)) {
         let h = if line.key == LineKey::Dispatch {
-            right = right.max(TRACK_X0 + text_width(&dispatch_label(line), Cut::C7x9, LABEL_PX));
             LABEL_ROW_H
-        } else if line.active {
-            let shown = visible(line, expanded);
-            for (i, &t) in line.tracks.iter().take(shown).enumerate() {
-                ys.insert(
-                    t,
-                    top + LABEL_ROW_H + i as f32 * TRACK_PITCH + TRACK_Y_IN_SLOT,
-                );
-            }
-            let stub = if shown < line.tracks.len() {
-                STUB_ROW_H
-            } else {
-                0.0
+        } else if let Some(i) = trains.iter().position(|t| t.line == line.key)
+            && line.active
+        {
+            let train = trains.remove(i);
+            let pts = line_path(&line.key, x0, x1, top + BASE_Y);
+            let mut g = LineGeom {
+                key: line.key.clone(),
+                color,
+                pts,
+                blocks: Vec::new(),
+                station_s: Vec::new(),
+                head_s: 0.0,
+                train,
             };
-            LABEL_ROW_H + shown as f32 * TRACK_PITCH + stub
+            let len = g.len();
+            let legs = (g.train.stations.len() + 1) as f32;
+            g.blocks = blocks(&line.key, len);
+            g.station_s = (0..g.train.stations.len())
+                .map(|i| len * (i + 1) as f32 / legs)
+                .collect();
+            g.head_s = len * (g.train.at / legs).clamp(0.0, 1.0);
+            geoms.push(g);
+            LINE_H
         } else {
-            right = right.max(TRACK_X0 + FOLDED_LEN);
             LABEL_ROW_H + FOLDED_H
         };
         lines.push(LineBox {
             key: line.key.clone(),
             top,
             h,
+            color,
         });
         top += h + BUNDLE_GAP;
-    }
-
-    let fork_of: BTreeMap<TrackId, _> = snap.forks.iter().map(|f| (f.child_track, f)).collect();
-    let mut tracks = BTreeMap::new();
-    for &id in ys.keys() {
-        place(snap, id, &ys, &fork_of, &mut tracks, 0);
-    }
-    for (id, g) in &tracks {
-        let end = g.blocks.last().map_or(g.x0, |&(x, w)| x + w);
-        right = right.max(end + STAR_OFFSET + STAR_HALF);
-        if let (Some(&sx), Some(t)) = (g.station_x.last(), snap.tracks.get(id))
-            && let Some(st) = t.stations.last().and_then(|s| snap.stations.get(s))
-        {
-            right = right.max(sx + text_width(&station_text(snap, st), Cut::C5x7, LABEL_PX));
-        }
     }
     let bottom = lines.last().map_or(0.0, |l| l.top + l.h);
     let mut layout = Layout {
         lines,
-        tracks,
+        geoms,
+        width,
         content: R {
             x: 0.0,
             y: 0.0,
-            w: right + TRACK_X0,
+            w: width,
             h: bottom,
         },
     };
-    // A tag ends at its head block, so a train near the track start hangs left of x = 0.
-    let left = snap
-        .trains
-        .values()
-        .filter(|t| layout.tracks.contains_key(&t.track))
-        .map(|t| super::tag_rect(&layout, t).x - TRACK_X0)
+    // A tag ends at the train's head, so a train at the line start can hang left of x = 0.
+    let left = layout
+        .geoms
+        .iter()
+        .map(|g| super::tags::tag_rect_in(g).x - TRACK_X0)
         .fold(0.0f32, f32::min);
     layout.content.x = left;
     layout.content.w -= left;
     layout
 }
 
-/// A child track starts where its fork's diagonal lands, so its parent is placed first.
-fn place(
-    snap: &Snapshot,
-    id: TrackId,
-    ys: &BTreeMap<TrackId, f32>,
-    fork_of: &BTreeMap<TrackId, &pelhaim_core::Fork>,
-    out: &mut BTreeMap<TrackId, TrackGeom>,
-    depth: usize,
-) {
-    if out.contains_key(&id) {
-        return;
-    }
-    let y = ys[&id];
-    let mut x0 = TRACK_X0;
-    // The depth bound only guards against a malformed snapshot with a fork cycle.
-    if let Some(f) = fork_of.get(&id)
-        && ys.contains_key(&f.parent_track)
-        && depth < 64
-    {
-        place(snap, f.parent_track, ys, fork_of, out, depth + 1);
-        let pg = &out[&f.parent_track];
-        let fx = fork_x(pg, f);
-        x0 = fx + FORK_STUB + (y - pg.y).abs() / tan60() + FORK_TO_TRACK;
-    }
-    let n = block_count(snap, id);
-    let mut x = x0;
-    let blocks: Vec<(f32, f32)> = (0..n)
-        .map(|i| {
-            let w = BLOCK_LENGTHS[(id.0 as usize + i) % BLOCK_LENGTHS.len()];
-            let b = (x, w);
-            x += w + BLOCK_GAP;
-            b
-        })
-        .collect();
-    let stations = snap.tracks.get(&id).map_or(0, |t| t.stations.len());
-    let station_x = (0..stations)
-        .map(|s| {
-            let (bx, bw) = blocks[(s + 1) * usize::from(LEG_BLOCKS) - 1];
-            bx + bw
-        })
-        .collect();
-    out.insert(
-        id,
-        TrackGeom {
-            y,
-            x0,
-            blocks,
-            station_x,
-        },
-    );
-}
-
-fn fork_x(parent: &TrackGeom, f: &pelhaim_core::Fork) -> f32 {
-    let at = usize::from(f.at.leg) * usize::from(LEG_BLOCKS) + usize::from(f.at.block);
-    let (x, w) = parent.blocks[at.min(parent.blocks.len() - 1)];
-    x + w
-}
-
 pub(super) fn draw(out: &mut Scene, cx: &Ctx) {
-    let p = &cx.paint.p;
     for (line, lb) in cx.snap.lines.iter().zip(&cx.layout.lines) {
         draw_label(out, cx, line, lb.top);
         if line.key == LineKey::Dispatch {
             continue;
         }
-        if !line.active {
-            let y = lb.top + LABEL_ROW_H + FOLDED_H / 2.0;
-            cx.rect(
-                &mut out.list,
-                R {
-                    x: TRACK_X0,
-                    y: y - FOLDED_THICK / 2.0,
-                    w: FOLDED_LEN,
-                    h: FOLDED_THICK,
-                },
-                p.glyph.alpha(0.5),
-            );
-            continue;
-        }
-        for t in &line.tracks {
-            if let Some(g) = cx.layout.tracks.get(t) {
-                draw_track(out, cx, *t, g);
+        let base = cx.line_rgba(lb.color);
+        match cx.layout.geom(&line.key) {
+            Some(g) => draw_line(out, cx, g, base),
+            None => {
+                let y = lb.top + LABEL_ROW_H + FOLDED_H / 2.0;
+                cx.rect(
+                    &mut out.list,
+                    R {
+                        x: cx.layout.line_x0(),
+                        y: y - FOLDED_THICK / 2.0,
+                        w: cx.layout.line_x1() - cx.layout.line_x0(),
+                        h: FOLDED_THICK,
+                    },
+                    base.alpha(0.5),
+                );
             }
         }
-        let hidden = line
-            .tracks
-            .iter()
-            .filter(|t| !cx.layout.tracks.contains_key(t))
-            .count();
-        if hidden > 0 {
-            let s = format!("+{hidden}");
-            let top = lb.top + lb.h - STUB_ROW_H + 1.0;
-            draw_text(
-                &mut out.list,
-                cx.v,
-                &s,
-                TRACK_X0,
-                top,
-                Cut::C5x7,
-                LABEL_PX,
-                p.glyph,
-            );
-            let r = R {
-                x: TRACK_X0 - 3.0,
-                y: top - 3.0,
-                w: text_width(&s, Cut::C5x7, LABEL_PX) + 6.0,
-                h: line_height(Cut::C5x7, LABEL_PX) + 6.0,
-            };
-            out.hits.push((cx.v.rect(r), Hit::Stub(line.key.clone())));
-        }
-    }
-    for f in &cx.snap.forks {
-        draw_fork(out, cx, f);
     }
 }
 
@@ -267,14 +335,6 @@ fn running_words(n: u32) -> String {
     match n {
         1 => "1 agent running".into(),
         n => format!("{n} agents running"),
-    }
-}
-
-fn dispatch_label(line: &LineView) -> String {
-    if line.active {
-        format!("{} · {}", line.name, running_words(line.running))
-    } else {
-        line.name.clone()
     }
 }
 
@@ -290,17 +350,10 @@ pub(super) fn arrival_text(snap: &Snapshot, st: &Station) -> Option<String> {
     ))
 }
 
-fn station_text(snap: &Snapshot, st: &Station) -> String {
-    match arrival_text(snap, st) {
-        Some(arr) => format!("{} {arr}", st.title),
-        None => st.title.clone(),
-    }
-}
-
 fn draw_label(out: &mut Scene, cx: &Ctx, line: &LineView, top: f32) {
     let p = &cx.paint.p;
     let space = advance(Cut::C7x9, LABEL_PX);
-    let mut x = TRACK_X0;
+    let mut x = cx.layout.line_x0();
     let mut put = |s: &str, color: Rgba| {
         draw_text(
             &mut out.list,
@@ -327,186 +380,199 @@ fn draw_label(out: &mut Scene, cx: &Ctx, line: &LineView, top: f32) {
     }
 }
 
-pub(super) fn block_colors(cx: &Ctx, train: Option<&Train>, n: usize) -> Vec<Rgba> {
-    let p = &cx.paint.p;
-    let Some(t) = train else {
-        return vec![p.idle; n];
-    };
-    if t.parent.is_some() && t.state == TrainState::Done {
-        return vec![p.done; n];
-    }
-    let working = t.state == TrainState::Working;
-    let head = head_index(t, n) as isize;
-    let tail = head - if working { 5 } else { 3 } + 1;
-    let leg_end = (usize::from(t.position.leg) + 1) * usize::from(LEG_BLOCKS) - 1;
-    let own = cx.paint.state(&t.state);
-    (0..n)
-        .map(|i| {
-            let b = i as isize;
-            if b < tail {
-                p.done
-            } else if b <= head {
-                own
-            } else if working && i <= leg_end {
-                p.route
+/// Ahead of the train the line's own colour is dimmed; behind it, full. Progress only:
+/// state lives on the tag and the stations (owner, 2026-11-24).
+pub fn ahead_rgba(base: Rgba) -> Rgba {
+    oklab_mute(base, 0.62, 0.7)
+}
+
+pub(super) fn block_rgba(g: &LineGeom, base: Rgba) -> Vec<Rgba> {
+    let ahead = ahead_rgba(base);
+    g.blocks
+        .iter()
+        .map(|&(s0, s1)| {
+            if (s0 + s1) / 2.0 <= g.head_s {
+                base
             } else {
-                p.idle
+                ahead
             }
         })
         .collect()
 }
 
-fn draw_track(out: &mut Scene, cx: &Ctx, id: TrackId, g: &TrackGeom) {
-    let p = &cx.paint.p;
-    let train = cx.train_on.get(&id).copied();
-    let colors = block_colors(cx, train, g.blocks.len());
-    for (&(x, w), &c) in g.blocks.iter().zip(&colors) {
-        cx.rect(
-            &mut out.list,
-            R {
-                x,
-                y: g.y - TRACK_THICK / 2.0,
-                w,
-                h: TRACK_THICK,
-            },
-            c,
-        );
-    }
-
-    let track = cx.snap.tracks.get(&id);
-    let stations = track.map_or(&[][..], |t| &t.stations[..]);
+/// A station's label: its title cut to the room before the next station (or the line
+/// end), then the clock if it is the one the train runs to.
+pub fn station_label(snap: &Snapshot, g: &LineGeom, i: usize) -> Option<(String, Option<String>)> {
+    let st = snap.stations.get(&g.train.stations[i])?;
     let adv = advance(Cut::C5x7, LABEL_PX);
-    if let Some(n) = track.map(|t| t.folded).filter(|&n| n > 0) {
-        draw_text(
-            &mut out.list,
-            cx.v,
-            &format!("+{n} earlier"),
-            g.x0,
-            g.y - STATION_LABEL_UP,
-            Cut::C5x7,
-            LABEL_PX,
-            p.glyph,
-        );
+    let (sx, _) = g.station_xy(i);
+    let room_end = match g.station_s.get(i + 1) {
+        Some(_) => g.station_xy(i + 1).0 - MARKER / 2.0,
+        None => g.x1() + STAR_OFFSET + STAR_HALF,
+    };
+    let arr = (g.train.next == Some(i))
+        .then(|| arrival_text(snap, st))
+        .flatten();
+    let arr_w = arr
+        .as_ref()
+        .map_or(0.0, |a| text_width(a, Cut::C5x7, LABEL_PX) + adv);
+    let room = room_end - (sx - MARKER / 2.0) - adv - arr_w;
+    let fit = (room / adv).max(0.0) as usize;
+    Some((pelhaim_core::truncate_chars(&st.title, fit), arr))
+}
+
+/// The label's top-left: lifted above the highest point of the path under it, so the
+/// line never runs through its own labels.
+pub fn station_label_at(snap: &Snapshot, g: &LineGeom, i: usize) -> Option<(f32, f32, f32)> {
+    let (title, arr) = station_label(snap, g, i)?;
+    let adv = advance(Cut::C5x7, LABEL_PX);
+    let x = g.station_xy(i).0 - MARKER / 2.0;
+    let w = text_width(&title, Cut::C5x7, LABEL_PX)
+        + arr
+            .as_ref()
+            .map_or(0.0, |a| adv + text_width(a, Cut::C5x7, LABEL_PX));
+    Some((x, g.min_y(x, x + w) - STATION_LABEL_UP, w))
+}
+
+pub fn earlier_label(g: &LineGeom) -> Option<(String, f32, f32, f32)> {
+    let n = g.train.folded;
+    if n == 0 {
+        return None;
     }
-    for (i, (&sx, sid)) in g.station_x.iter().zip(stations).enumerate() {
-        if let Some(st) = cx.snap.stations.get(sid) {
-            let title = match g.station_x.get(i + 1) {
-                Some(&next) => {
-                    let fit = ((next - sx - adv) / adv).max(0.0) as usize;
-                    pelhaim_core::truncate_chars(&st.title, fit)
-                }
-                None => st.title.clone(),
-            };
-            draw_text(
-                &mut out.list,
-                cx.v,
-                &title,
-                sx,
-                g.y - STATION_LABEL_UP,
-                Cut::C5x7,
-                LABEL_PX,
-                p.label,
-            );
-            if let Some(arr) = arrival_text(cx.snap, st) {
-                let c = if st.overdue(cx.snap.now) {
-                    p.wait
-                } else {
-                    p.glyph
-                };
-                draw_text(
+    let s = format!("+{n} earlier");
+    let x = g.x0();
+    let w = text_width(&s, Cut::C5x7, LABEL_PX);
+    let y = g.min_y(x, x + w) - STATION_LABEL_UP;
+    Some((s, x, y, w))
+}
+
+fn draw_line(out: &mut Scene, cx: &Ctx, g: &LineGeom, base: Rgba) {
+    let p = &cx.paint.p;
+    let t = TRACK_THICK;
+    for (&(s0, s1), c) in g.blocks.iter().zip(block_rgba(g, base)) {
+        let pieces = g.pieces(s0, s1);
+        for (i, &(a, b)) in pieces.iter().enumerate() {
+            if a.1 == b.1 {
+                cx.rect(
                     &mut out.list,
-                    cx.v,
-                    &arr,
-                    sx + text_width(&title, Cut::C5x7, LABEL_PX) + adv,
-                    g.y - STATION_LABEL_UP,
-                    Cut::C5x7,
-                    LABEL_PX,
+                    R {
+                        x: a.0,
+                        y: a.1 - t / 2.0,
+                        w: b.0 - a.0,
+                        h: t,
+                    },
+                    c,
+                );
+            } else {
+                cx.seg(&mut out.list, a, b, t, c);
+            }
+            // A square cap where a block bends hides the notch between its pieces.
+            if i > 0 {
+                cx.rect(
+                    &mut out.list,
+                    R {
+                        x: a.0 - t / 2.0,
+                        y: a.1 - t / 2.0,
+                        w: t,
+                        h: t,
+                    },
                     c,
                 );
             }
         }
-        let st = cx.snap.stations.get(sid);
-        let arrived = train.filter(|t| {
-            t.position.berthed
-                && usize::from(t.position.leg) == i
-                && t.position.block == LEG_BLOCKS - 1
-        });
-        let platform = match (arrived, st) {
-            (Some(t), _) => cx.paint.state(&t.state),
-            (None, Some(st)) if st.overdue(cx.snap.now) => p.wait,
-            (None, Some(st)) if st.status == StationStatus::Done => p.done,
-            _ => p.idle,
-        };
-        cx.rect(
-            &mut out.list,
-            R {
-                x: sx,
-                y: g.y - PLATFORM_UP,
-                w: PLATFORM_W,
-                h: PLATFORM_H,
-            },
-            platform,
-        );
     }
 
-    let end = g.blocks.last().map_or(g.x0, |&(x, w)| x + w);
-    let (sx, sy) = (end + STAR_OFFSET, g.y);
+    let (ex, ey) = (g.x1() + STAR_OFFSET, g.pts[g.pts.len() - 1].1);
     let h = STAR_HALF;
     cx.seg(
         &mut out.list,
-        (sx - h, sy - h),
-        (sx + h, sy + h),
+        (ex - h, ey - h),
+        (ex + h, ey + h),
         STAR_WIDTH,
         p.glyph,
     );
     cx.seg(
         &mut out.list,
-        (sx - h, sy + h),
-        (sx + h, sy - h),
+        (ex - h, ey + h),
+        (ex + h, ey - h),
         STAR_WIDTH,
         p.glyph,
     );
-}
 
-fn draw_fork(out: &mut Scene, cx: &Ctx, f: &pelhaim_core::Fork) {
-    let (Some(pg), Some(cg)) = (
-        cx.layout.tracks.get(&f.parent_track),
-        cx.layout.tracks.get(&f.child_track),
-    ) else {
-        return;
-    };
-    let color = cx
-        .train_on
-        .get(&f.child_track)
-        .map_or(cx.paint.p.idle, |t| cx.paint.state(&t.state));
-    let fx = fork_x(pg, f);
-    let (py, cy) = (pg.y, cg.y);
-    let knee = fx + FORK_STUB;
-    let pts = [
-        (fx, py),
-        (knee, py),
-        (knee + (cy - py).abs() / tan60(), cy),
-        (cg.x0, cy),
-    ];
-    for w in pts.windows(2) {
-        cx.seg(&mut out.list, w[0], w[1], TRACK_THICK, color);
+    if let Some((s, x, y, _)) = earlier_label(g) {
+        draw_text(&mut out.list, cx.v, &s, x, y, Cut::C5x7, LABEL_PX, p.glyph);
     }
-    // Square caps at each vertex hide the butt-end notches between segments.
-    let t = TRACK_THICK;
-    for (x, y) in pts {
-        cx.rect(
+    let adv = advance(Cut::C5x7, LABEL_PX);
+    let state = cx.paint.state(g.train.state(cx.snap));
+    let last = g.station_s.len().checked_sub(1);
+    for i in 0..g.station_s.len() {
+        let Some(st) = cx.snap.stations.get(&g.train.stations[i]) else {
+            continue;
+        };
+        let (sx, sy) = g.station_xy(i);
+        let here = g.train.berthed && (g.train.next.or(last) == Some(i));
+        let ring = if here {
+            state
+        } else if st.overdue(cx.snap.now) {
+            p.wait
+        } else if st.status == StationStatus::Done {
+            p.done
+        } else {
+            p.idle
+        };
+        let m = R {
+            x: sx - MARKER / 2.0,
+            y: sy - MARKER / 2.0,
+            w: MARKER,
+            h: MARKER,
+        };
+        cx.rect(&mut out.list, m, ring);
+        if !here {
+            let d = (MARKER - MARKER_HOLE) / 2.0;
+            cx.rect(
+                &mut out.list,
+                R {
+                    x: m.x + d,
+                    y: m.y + d,
+                    w: MARKER_HOLE,
+                    h: MARKER_HOLE,
+                },
+                p.bg,
+            );
+        }
+
+        let (Some((title, arr)), Some((lx, ly, _))) = (
+            station_label(cx.snap, g, i),
+            station_label_at(cx.snap, g, i),
+        ) else {
+            continue;
+        };
+        draw_text(
             &mut out.list,
-            R {
-                x: x - t / 2.0,
-                y: y - t / 2.0,
-                w: t,
-                h: t,
-            },
-            color,
+            cx.v,
+            &title,
+            lx,
+            ly,
+            Cut::C5x7,
+            LABEL_PX,
+            p.label,
         );
+        if let Some(arr) = arr {
+            let c = if st.overdue(cx.snap.now) {
+                p.wait
+            } else {
+                p.glyph
+            };
+            draw_text(
+                &mut out.list,
+                cx.v,
+                &arr,
+                lx + text_width(&title, Cut::C5x7, LABEL_PX) + adv,
+                ly,
+                Cut::C5x7,
+                LABEL_PX,
+                c,
+            );
+        }
     }
-}
-
-pub(super) fn head_block(g: &TrackGeom, train: &Train) -> (f32, f32) {
-    g.blocks[head_index(train, g.blocks.len())]
 }
