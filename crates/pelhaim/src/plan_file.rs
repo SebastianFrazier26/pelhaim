@@ -3,7 +3,8 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use pelhaim_core::{
-    Check, Plan, PlanError, PlanStep, SignoffFlag, Tool, plan::validate, sanitize_line,
+    Check, Plan, PlanError, PlanStep, SignoffFlag, Tool, is_valid_slug, plan::validate,
+    sanitize_line,
 };
 use serde::{Deserialize, Serialize};
 use toml::Spanned;
@@ -31,6 +32,19 @@ impl std::fmt::Display for RenderError {
 }
 
 impl std::error::Error for RenderError {}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BadSlug {
+    pub project: String,
+}
+
+impl std::fmt::Display for BadSlug {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "project {:?} is not a valid slug", self.project)
+    }
+}
+
+impl std::error::Error for BadSlug {}
 
 /// The core `Tool` and `Check` serialise for M1's persisted JSON (`"Claude"`,
 /// `{Command={argv=…}}`), so the file and the planner schema use their own shape (F10).
@@ -363,10 +377,16 @@ pub fn parse(text: &str, base: &Plan) -> Result<Vec<PlanStep>, Vec<PlanFileError
 }
 
 /// One file per plan, not per revision, so an open editor keeps saving to it (F22).
-pub fn plan_path(data_dir: &Path, plan: &Plan) -> PathBuf {
-    data_dir
+/// The slug check keeps `plan.project` from naming a path outside `<data_dir>/plans`.
+pub fn plan_path(data_dir: &Path, plan: &Plan) -> Result<PathBuf, BadSlug> {
+    if !is_valid_slug(&plan.project) {
+        return Err(BadSlug {
+            project: plan.project.clone(),
+        });
+    }
+    Ok(data_dir
         .join("plans")
-        .join(format!("{}-{}.toml", plan.project, plan.id.0))
+        .join(format!("{}-{}.toml", plan.project, plan.id.0)))
 }
 
 #[cfg(test)]
@@ -597,13 +617,29 @@ acceptance = [
     }
 
     #[test]
+    fn plan_path_rejects_bad_slug() {
+        for project in ["../etc", "a/b", "", "Up", "a b"] {
+            let p = Plan {
+                project: project.into(),
+                ..base()
+            };
+            assert_eq!(
+                plan_path(Path::new("/data"), &p),
+                Err(BadSlug {
+                    project: project.into()
+                })
+            );
+        }
+    }
+
+    #[test]
     fn plan_path_is_fixed_across_revisions() {
         let d = Path::new("/data");
         let mut p = four_step_plan();
-        let first = plan_path(d, &p);
+        let first = plan_path(d, &p).unwrap();
         p.revision += 5;
         p.steps.pop();
-        assert_eq!(first, plan_path(d, &p));
+        assert_eq!(first, plan_path(d, &p).unwrap());
         assert_eq!(first, PathBuf::from("/data/plans/safeascent-7.toml"));
     }
 }

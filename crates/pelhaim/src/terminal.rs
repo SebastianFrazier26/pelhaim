@@ -24,13 +24,60 @@ fn path_bytes(p: &Path) -> &[u8] {
     p.to_str().unwrap_or_default().as_bytes()
 }
 
+#[derive(Debug)]
+pub enum ScriptError {
+    BadName(String),
+    EmptyArgv,
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for ScriptError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadName(n) => write!(f, "script name {n:?} is not a plain file name"),
+            Self::EmptyArgv => write!(f, "script has no command to run"),
+            Self::Io(e) => write!(f, "writing script: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ScriptError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for ScriptError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+fn plain_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
 /// `<dir>/<name>.command`: macOS opens that extension in Terminal.
 pub fn write_script(
     dir: &Path,
     name: &str,
     cwd: &Path,
     argv: &[String],
-) -> std::io::Result<PathBuf> {
+) -> Result<PathBuf, ScriptError> {
+    if !plain_file_name(name) {
+        return Err(ScriptError::BadName(name.to_string()));
+    }
+    if argv.is_empty() {
+        return Err(ScriptError::EmptyArgv);
+    }
     std::fs::create_dir_all(dir)?;
     let path = dir.join(format!("{name}.command"));
     let mut body = b"#!/bin/sh\ncd ".to_vec();
@@ -42,15 +89,21 @@ pub fn write_script(
     }
     body.push(b'\n');
 
+    // `remove_file` unlinks a symlink itself, never its target, and `create_new` (O_EXCL)
+    // refuses any entry that reappears in between, so the write never follows a link.
+    match std::fs::remove_file(&path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+        _ => {}
+    }
     let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o700);
     }
     let mut f = opts.open(&path)?;
-    // `mode` applies only when the file is created; an older script keeps its bits otherwise.
+    // The umask can strip bits from the creation mode.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -138,6 +191,52 @@ mod tests {
             let mode = std::fs::metadata(&p).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o700);
         }
+    }
+
+    #[test]
+    fn script_name_must_be_plain() {
+        let dir = tempfile::tempdir().unwrap();
+        let argv = strings(&["true"]);
+        for name in ["../x", "a/b", ".", "..", "", "a b", "/abs"] {
+            let r = write_script(dir.path(), name, Path::new("/"), &argv);
+            assert!(
+                matches!(r, Err(ScriptError::BadName(ref n)) if n == name),
+                "{name:?}"
+            );
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        assert!(write_script(dir.path(), "take-over_1.v2", Path::new("/"), &argv).is_ok());
+    }
+
+    #[test]
+    fn empty_argv_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = write_script(dir.path(), "x", Path::new("/"), &[]);
+        assert!(matches!(r, Err(ScriptError::EmptyArgv)));
+        assert!(!dir.path().join("x.command").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_at_target_is_replaced_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, "keep").unwrap();
+        let link = dir.path().join("x.command");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        let path = write_script(dir.path(), "x", Path::new("/"), &strings(&["true"])).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_file()
+        );
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .ends_with("exec 'true'\n")
+        );
     }
 
     #[test]
