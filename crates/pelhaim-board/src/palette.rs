@@ -124,7 +124,7 @@ const LINE_HUES: [f32; 12] = [
     10.0, 45.0, 75.0, 105.0, 135.0, 165.0, 195.0, 225.0, 255.0, 285.0, 315.0, 345.0,
 ];
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum LineColor {
     Palette(usize),
     Rgb(u32),
@@ -159,6 +159,49 @@ pub fn line_color(slug: &str, color: Option<&str>) -> LineColor {
     color.and_then(parse_line_color).unwrap_or_else(|| {
         LineColor::Palette(((slug_hash(slug) >> 32) % LINE_COLOR_NAMES.len() as u64) as usize)
     })
+}
+
+/// Collision-free colours for a board's project lines (owner, 2026-11-25).
+///
+/// A parsed `color` wins and reserves its palette slot. The rest, sorted by slug, start
+/// at their hashed slot and probe forward to the next free one; only once all 12 are
+/// taken does a fresh round start, reusing colours. Sorting by slug (not first-seen
+/// order) makes the result a pure function of the set of lines, so it is stable across
+/// frames and restarts; a new line moves only lines that sort after it and whose probe
+/// runs through its slot.
+pub fn assign_line_colors<'a>(
+    lines: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
+) -> std::collections::BTreeMap<String, LineColor> {
+    let n = LINE_COLOR_NAMES.len();
+    let mut out = std::collections::BTreeMap::new();
+    let mut taken = vec![false; n];
+    let mut free: Vec<&str> = Vec::new();
+    for (slug, color) in lines {
+        match color.and_then(parse_line_color) {
+            Some(c) => {
+                if let LineColor::Palette(i) = c {
+                    taken[i % n] = true;
+                }
+                out.insert(slug.to_string(), c);
+            }
+            None => free.push(slug),
+        }
+    }
+    free.sort_unstable();
+    free.dedup();
+    for slug in free {
+        if taken.iter().all(|&t| t) {
+            taken.fill(false);
+        }
+        let start = ((slug_hash(slug) >> 32) % n as u64) as usize;
+        let i = (0..n)
+            .map(|k| (start + k) % n)
+            .find(|&i| !taken[i])
+            .expect("a free slot after the reset");
+        taken[i] = true;
+        out.insert(slug.to_string(), LineColor::Palette(i));
+    }
+    out
 }
 
 /// Line colours sit darker than the state colours, so a state tag or station never reads
@@ -215,6 +258,66 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    const REAL: [&str; 8] = [
+        "safeascent",
+        "stringcan",
+        "g-l-a-s-s",
+        "pelhaim",
+        "ethica",
+        "cabn",
+        "loosy-goose",
+        "mlb-fansent",
+    ];
+
+    #[test]
+    fn real_slugs_get_distinct_colours_in_any_order() {
+        let a = assign_line_colors(REAL.iter().map(|s| (*s, None)));
+        let distinct: std::collections::BTreeSet<_> = a.values().collect();
+        assert_eq!(distinct.len(), REAL.len(), "{a:?}");
+        let b = assign_line_colors(REAL.iter().rev().map(|s| (*s, None)));
+        assert_eq!(a, b, "input order does not matter");
+    }
+
+    #[test]
+    fn configured_colour_wins_and_reserves_its_slot() {
+        let LineColor::Palette(hashed) = line_color("cabn", None) else {
+            unreachable!()
+        };
+        let name = LINE_COLOR_NAMES[hashed];
+        let a = assign_line_colors([("cabn", None), ("other", Some(name))]);
+        assert_eq!(a["other"], LineColor::Palette(hashed));
+        assert_eq!(
+            a["cabn"],
+            LineColor::Palette((hashed + 1) % 12),
+            "probes past it"
+        );
+        let rgb = assign_line_colors([("cabn", None), ("x", Some("#010203"))]);
+        assert_eq!(
+            rgb["cabn"],
+            LineColor::Palette(hashed),
+            "a hex colour reserves no slot"
+        );
+    }
+
+    #[test]
+    fn wraps_only_after_all_twelve() {
+        let slugs: Vec<String> = (0..20).map(|i| format!("p{i:02}")).collect();
+        let a = assign_line_colors(slugs.iter().map(|s| (s.as_str(), None)));
+        let first: std::collections::BTreeSet<_> = slugs[..12].iter().map(|s| a[s]).collect();
+        assert_eq!(first.len(), 12, "the first 12 by slug use every colour");
+        let second: std::collections::BTreeSet<_> = slugs[12..].iter().map(|s| a[s]).collect();
+        assert_eq!(second.len(), 8, "the next round is distinct again");
+    }
+
+    #[test]
+    fn a_new_line_disturbs_at_most_later_lines_on_its_probe() {
+        let base = assign_line_colors(REAL.iter().map(|s| (*s, None)));
+        let more = assign_line_colors(REAL.iter().map(|s| (*s, None)).chain([("zzz", None)]));
+        for s in REAL {
+            assert_eq!(base[s], more[s], "{s}: a slug sorting last moves nobody");
         }
     }
 

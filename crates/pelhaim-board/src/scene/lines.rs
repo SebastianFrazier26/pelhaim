@@ -6,7 +6,7 @@ use super::{TRACK_THICK, TRACK_X0};
 use crate::color::{Rgba, oklab_mute};
 use crate::display::R;
 use crate::font::{Cut, advance, draw_text, text_width};
-use crate::palette::{LineColor, line_color, slug_hash};
+use crate::palette::{LineColor, assign_line_colors, slug_hash};
 
 /// Owner, 2026-11-24: lines run most of the way across the screen. Each starts this
 /// fraction of the board width in from the left and ends as far in from the right.
@@ -178,11 +178,19 @@ fn seed(key: &LineKey) -> u64 {
     }
 }
 
-pub fn key_color(line: &LineView) -> LineColor {
-    match &line.key {
-        LineKey::Project(s) => line_color(s, line.color.as_deref()),
-        _ => LineColor::Neutral,
-    }
+/// Every line's colour, from the whole set at once so no two projects share one.
+pub fn line_colors(snap: &Snapshot) -> Vec<LineColor> {
+    let assigned = assign_line_colors(snap.lines.iter().filter_map(|l| match &l.key {
+        LineKey::Project(s) => Some((s.as_str(), l.color.as_deref())),
+        _ => None,
+    }));
+    snap.lines
+        .iter()
+        .map(|l| match &l.key {
+            LineKey::Project(s) => assigned[s],
+            _ => LineColor::Neutral,
+        })
+        .collect()
 }
 
 /// SplitMix64: a tiny deterministic stream, so a line's turns depend on its slug alone.
@@ -237,8 +245,7 @@ pub fn board_layout(snap: &Snapshot, width: f32) -> Layout {
     let mut lines = Vec::with_capacity(snap.lines.len());
     let mut geoms = Vec::new();
     let mut top = 0.0;
-    for line in &snap.lines {
-        let color = key_color(line);
+    for (line, color) in snap.lines.iter().zip(line_colors(snap)) {
         let h = if line.key == LineKey::Dispatch {
             LABEL_ROW_H
         } else if let Some(i) = trains.iter().position(|t| t.line == line.key)

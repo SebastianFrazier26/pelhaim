@@ -5,8 +5,8 @@ use pelhaim_board::scene::lines::{
 use pelhaim_board::scene::{LABEL_PX, TRACK_THICK};
 use pelhaim_board::{
     DisplayList, Hit, Layout, LineColor, PaletteKind, Prim, R, Rgba, Scene, SceneInput, View,
-    ViewState, board_layout, build_scene, line_color, line_rgba, line_train_of, line_trains,
-    palette, state_rank, tag_rect,
+    ViewState, assign_line_colors, board_layout, build_scene, line_rgba, line_train_of,
+    line_trains, palette, state_rank, tag_rect,
 };
 use pelhaim_core::testkit::{self, sample_board, ts};
 use pelhaim_core::{LineKey, SessionKey, Snapshot, TagResolution, TrainId, TrainState};
@@ -333,13 +333,29 @@ fn station_markers_show_done_overdue_and_arrival() {
 fn line_colour_is_per_slug_with_config_override() {
     let snap = sample_board();
     let l = layout(&snap);
-    for g in &l.geoms {
-        let want = match &g.key {
-            LineKey::Project(s) => line_color(s, None),
+    let assigned = assign_line_colors(snap.lines.iter().filter_map(|lv| match &lv.key {
+        LineKey::Project(s) => Some((s.as_str(), None)),
+        _ => None,
+    }));
+    for b in &l.lines {
+        let want = match &b.key {
+            LineKey::Project(s) => assigned[s],
             _ => LineColor::Neutral,
         };
-        assert_eq!(g.color, want);
+        assert_eq!(b.color, want);
     }
+    let projects: Vec<_> = l
+        .lines
+        .iter()
+        .filter(|b| matches!(b.key, LineKey::Project(_)))
+        .map(|b| b.color)
+        .collect();
+    let distinct: std::collections::BTreeSet<_> = projects.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        projects.len(),
+        "no two lines share a colour"
+    );
     assert_eq!(layout(&snap), layout(&snap), "stable across frames");
 
     let mut snap = snap;
@@ -583,7 +599,7 @@ fn inactive_line_folds_to_a_full_width_thin_line() {
     assert_eq!(tracks.len(), 1);
     assert!((tracks[0].0.w - (l.line_x1() - l.line_x0())).abs() < 1e-3);
     assert_eq!(tracks[0].0.h, 1.5);
-    let c = line_rgba(PaletteKind::Matte, line_color("stringcan", None));
+    let c = line_rgba(PaletteKind::Matte, b.color);
     assert_eq!(tracks[0].1, c.alpha(0.5));
 }
 

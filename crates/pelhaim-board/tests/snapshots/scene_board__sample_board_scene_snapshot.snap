@@ -17329,7 +17329,7 @@ DisplayList(
         w: 1408.0,
         h: 1.5,
       ),
-      color: Rgba((39, 131, 161, 128)),
+      color: Rgba((140, 102, 158, 128)),
       aa: true,
     ),
     Rect(

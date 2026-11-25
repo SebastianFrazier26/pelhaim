@@ -19,8 +19,8 @@ pub use input::{
     InsetState, Mods, PopupState, UiAction, UiInput, UiKey, ViewState, on_input, sync,
 };
 pub use palette::{
-    BlockState, LineColor, Palette, PaletteKind, block_color, line_color, line_rgba, palette,
-    parse_line_color,
+    BlockState, LineColor, Palette, PaletteKind, assign_line_colors, block_color, line_color,
+    line_rgba, palette, parse_line_color,
 };
 pub use scene::{
     AlertButton, Hit, InsetAction, Layout, LineBox, LineGeom, LineTrain, Scene, SceneInput,
