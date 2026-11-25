@@ -1,0 +1,20 @@
+[package]
+name = "pelhaim-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+pelhaim-core = { path = "../pelhaim-core" }
+rusqlite = { version = "0.43.0", features = ["bundled"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+
+[dev-dependencies]
+tempfile = "3.27.0"

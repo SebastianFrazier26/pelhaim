@@ -1,0 +1,22 @@
+[package]
+name = "pelhaim-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["std", "serde"] }
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+proptest = "1.12.0"
+serde_json = "1.0.154"
+pelhaim-core = { path = ".", features = ["testkit"] }
+
+[features]
+testkit = []
