@@ -5,5 +5,7 @@ pub mod doctor;
 pub mod engine_task;
 pub mod env;
 pub mod keep_awake;
+pub mod plan_file;
 pub mod run;
 pub mod store_worker;
+pub mod terminal;
