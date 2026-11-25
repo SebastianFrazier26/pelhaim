@@ -14,6 +14,24 @@ pub struct PlanFileError {
     pub message: String,
 }
 
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum RenderError {
+    NoEstimate { step: String },
+}
+
+impl std::fmt::Display for RenderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoEstimate { step } => write!(
+                f,
+                "step {step:?} has no estimate_hours, which the plan file requires"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RenderError {}
+
 /// The core `Tool` and `Check` serialise for M1's persisted JSON (`"Claude"`,
 /// `{Command={argv=…}}`), so the file and the planner schema use their own shape (F10).
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug, Default)]
@@ -89,10 +107,11 @@ pub(crate) fn step_from_wire(w: WireStep) -> PlanStep {
     }
 }
 
-/// A step without an estimate (only `pelhaim launch` makes one) maps to `0.0`, which
-/// `validate` rejects, so the owner is asked for one rather than it being invented.
-pub(crate) fn step_to_wire(s: &PlanStep) -> WireStep {
-    WireStep {
+pub(crate) fn step_to_wire(s: &PlanStep) -> Result<WireStep, RenderError> {
+    let estimate_hours = s
+        .estimate_hours
+        .ok_or_else(|| RenderError::NoEstimate { step: s.id.clone() })?;
+    Ok(WireStep {
         id: s.id.clone(),
         title: s.title.clone(),
         detail: s.detail.clone(),
@@ -102,7 +121,7 @@ pub(crate) fn step_to_wire(s: &PlanStep) -> WireStep {
             Tool::Codex => WireTool::Codex,
         },
         model: s.model.clone(),
-        estimate_hours: s.estimate_hours.unwrap_or(0.0),
+        estimate_hours,
         design: s.design,
         security: s.security,
         signoff: s.signoff.clone(),
@@ -116,7 +135,7 @@ pub(crate) fn step_to_wire(s: &PlanStep) -> WireStep {
                 Check::Manual { text } => WireCheck::Manual(text.clone()),
             })
             .collect(),
-    }
+    })
 }
 
 #[derive(Deserialize)]
@@ -188,7 +207,10 @@ fn flag_name(f: SignoffFlag) -> &'static str {
     }
 }
 
-pub fn render(plan: &Plan) -> String {
+/// `estimate_hours` is required in the file (F28). Only `pelhaim launch` without
+/// `--estimate` makes a `None` estimate, and those plans never reach the file, so this
+/// refuses rather than invent a value the owner would then have to notice and fix.
+pub fn render(plan: &Plan) -> Result<String, RenderError> {
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -202,7 +224,7 @@ pub fn render(plan: &Plan) -> String {
         plan.revision
     );
     for s in &plan.steps {
-        let w = step_to_wire(s);
+        let w = step_to_wire(s)?;
         out.push_str("\n[[step]]\n");
         push_line(&mut out, &format!("id = {}", quoted(&w.id)), None);
         push_line(
@@ -269,7 +291,7 @@ pub fn render(plan: &Plan) -> String {
             out.push_str("]\n");
         }
     }
-    out
+    Ok(out)
 }
 
 fn line_of(text: &str, offset: usize) -> usize {
@@ -420,7 +442,7 @@ mod tests {
     #[test]
     fn render_parse_round_trip() {
         let plan = four_step_plan();
-        let text = render(&plan);
+        let text = render(&plan).unwrap();
         assert!(text.starts_with(
             "# pelhaim plan for safeascent: Ship the risk page\n# Save to apply. Lines starting with # are ignored. Revision 3.\n"
         ));
@@ -442,7 +464,8 @@ mod tests {
         let text = render(&Plan {
             steps: vec![s],
             ..base()
-        });
+        })
+        .unwrap();
         let expected = r#"
 [[step]]
 id = "migrate"
@@ -468,7 +491,7 @@ acceptance = [
 
     #[test]
     fn tool_and_checks_use_lowercase_wire_shape() {
-        let text = render(&four_step_plan());
+        let text = render(&four_step_plan()).unwrap();
         assert!(text.contains("tool = \"codex\""));
         assert!(text.contains("{ manual = "));
         assert!(text.contains("{ command = [\"npm\", \"test\"] }"));
@@ -558,9 +581,19 @@ acceptance = [
             ..base()
         };
         plan.goal = "two\nlines".into();
-        let text = render(&plan);
+        let text = render(&plan).unwrap();
         assert!(text.starts_with("# pelhaim plan for safeascent: two lines\n"));
         assert_eq!(parse(&text, &base()).unwrap(), plan.steps);
+    }
+
+    #[test]
+    fn none_estimate_is_not_rendered() {
+        let mut plan = four_step_plan();
+        plan.steps[2].estimate_hours = None;
+        assert_eq!(
+            render(&plan),
+            Err(RenderError::NoEstimate { step: "ui".into() })
+        );
     }
 
     #[test]
