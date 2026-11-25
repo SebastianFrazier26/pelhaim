@@ -390,6 +390,7 @@ mod tests {
             origin,
             source_alert: Some(AlertId(format!("a{id}"))),
             written_to_md: false,
+            project_name: None,
         }
     }
 

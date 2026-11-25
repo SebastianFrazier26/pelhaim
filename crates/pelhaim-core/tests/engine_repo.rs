@@ -246,3 +246,46 @@ fn auto_projects_off_ignores_the_repo() {
     assert_eq!(tag_of(&s, &k), TagResolution::Untagged);
     assert_eq!(open_assigns(&s).len(), 1);
 }
+
+#[test]
+fn a_decision_on_an_auto_line_carries_the_line_name() {
+    let mut e = engine(&["ethica"]);
+    let k = SessionKey::claude("S1");
+    found(&mut e, &k, None, repo("SafeAscent"));
+    tag(&mut e, &k, "hi");
+    ask(
+        &mut e,
+        &k,
+        "toolu_q",
+        vec![question("Stage", "Go?", &["Yes", "No"])],
+        t0(),
+    );
+    answered(&mut e, &k, "toolu_q", "Yes", t0() + secs(5));
+    let log = |e: &mut Engine, project: Option<&str>| {
+        let id = e.snapshot().alerts[0].id.clone();
+        e.apply(Input::Command(Command::LogDecision {
+            alert: id,
+            project: project.map(str::to_string),
+            at: t0() + secs(9),
+        }));
+        e.snapshot().decisions_recent[0].clone()
+    };
+    let d = log(&mut e, None);
+    assert_eq!(d.project, "safeascent");
+    assert_eq!(d.project_name.as_deref(), Some("SafeAscent"));
+
+    let mut e = engine(&["ethica"]);
+    found(&mut e, &k, None, repo("ethica"));
+    tag(&mut e, &k, "hi");
+    ask(
+        &mut e,
+        &k,
+        "toolu_q",
+        vec![question("Stage", "Go?", &["Yes", "No"])],
+        t0(),
+    );
+    answered(&mut e, &k, "toolu_q", "Yes", t0() + secs(5));
+    let d = log(&mut e, None);
+    assert_eq!(d.project, "ethica");
+    assert_eq!(d.project_name, None, "a configured project needs no name");
+}

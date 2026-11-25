@@ -226,6 +226,7 @@ fn decision(id: i64, project: &str, title: &str) -> Decision {
         origin: Origin::Local,
         source_alert: None,
         written_to_md: false,
+        project_name: None,
     }
 }
 

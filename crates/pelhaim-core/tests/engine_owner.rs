@@ -448,6 +448,7 @@ fn log_decision_title_why_who() {
         origin: Origin::Local,
         source_alert: Some(id.clone()),
         written_to_md: false,
+        project_name: None,
     };
     assert_eq!(
         fx[..2],
@@ -498,6 +499,7 @@ fn log_decision_skips_alert_already_logged_before_restart() {
         origin: Origin::Local,
         source_alert: Some(id.clone()),
         written_to_md: true,
+        project_name: None,
     };
     let mut e = Engine::new(
         cfg(&["safeascent"]),
@@ -539,6 +541,7 @@ fn log_decision_ids_dates_and_empty_header() {
         origin: Origin::Local,
         source_alert: None,
         written_to_md: true,
+        project_name: None,
     };
     let mut e = Engine::new(
         EngineConfig {
@@ -726,6 +729,7 @@ fn export_pending_is_a_no_op_when_writes_are_off() {
         origin: Origin::Local,
         source_alert: None,
         written_to_md: false,
+        project_name: None,
     };
     let mut e = Engine::new(
         EngineConfig {

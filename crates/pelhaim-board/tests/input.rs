@@ -750,6 +750,7 @@ fn decisions_command_lists_up_to_ten() {
         origin: Origin::Local,
         source_alert: None,
         written_to_md: true,
+        project_name: None,
     };
     snap.decisions_recent = (0..12)
         .map(|i| pelhaim_core::Decision {
