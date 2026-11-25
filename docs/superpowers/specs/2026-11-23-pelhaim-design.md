@@ -192,7 +192,7 @@ A builder check on the first draft raised four questions that only the owner cou
 1. **Observed work is assigned to lines by explicit tags, not by cwd.**
    - The owner's orchestrator runs from `~`, and its subagents record `cwd=~/Developer`, so matching on cwd fails.
    - The orchestrator labels each agent it starts. Untagged work goes to an "Unsorted" line, whose alert offers a one-click "assign to project", remembered per session.
-   - The orchestrator session itself appears as a **DISPATCH** line. Its tagged subagent trains branch off it onto their project lines.
+   - The orchestrator session itself appears as a **DISPATCH** line. Its tagged subagent trains branch off it onto their project lines. *Superseded 2026-11-24 by §5.3: DISPATCH is a one-row count strip and the orchestrator draws no train.*
    - The tag format is the agent's call: see §7.7.
 2. **Run alongside first, replace later.**
    - In M1, pelhaim only observes the Claude Code orchestrator.
@@ -234,6 +234,28 @@ The owner approved this design on 2026-11-23 with three changes, all **[Owner], 
    - The owner can answer them (option buttons, free text) and see a compact board.
    - M1–M4 build only the seam: a remote API on the engine's alert/answer bus.
    - The app, relay and pairing are milestone M5. See §8.7.
+
+### 5.3 Owner decisions after trying M1 live (2026-11-24)
+
+The owner ran the M1 board against real sessions on 2026-11-24 and made three decisions, all **[Owner], 2026-11-24**. They override anything earlier in the doc; §6.5, §6.6, §7.4, §7.7, §7.10, §8.1 and §9.3 have been updated to match.
+
+1. **The orchestrator session gets no train.**
+   - DISPATCH becomes a slim header strip, one text row, with a count: `DISPATCH · 6 agents running`.
+   - A session is the orchestrator when it is self-tagged `dispatch`, listed in `[dispatch].sessions`, or marked "This is the orchestrator" from its Assign popup.
+   - It draws no track, no stations and no forks. Its subagents appear only on their own project lines.
+   - Its questions still raise alerts (popup and tray). An untagged subagent of the orchestrator still goes to UNSORTED with an Assign alert.
+   - Why: the orchestrator's train cluttered the board, and it exists only to track other sessions.
+2. **Stations come from explicit markers only.**
+   - Prompts and tool calls never create stations. Before, every prompt became one, which made lines huge.
+   - A station is created by a line that is exactly `pelhaim-milestone: <name>` in a session's assistant text or user prompt. The parsing rules are in §7.10.
+   - A train with no markers sits on its track with no stations. It still advances one block per tool call, within a bounded track (§7.4), so lines stay controlled.
+   - At most `[board].max_stations` stations show per track (default 5). Older ones fold into "+N earlier".
+   - Done, failed and waiting still colour the train and its blocks as before.
+   - Why: the owner wants lines "more controlled", not massively long at once.
+3. **Stations carry arrival times.** "Tasks (stations) should have arrival times based on how long the task will take… realistic on agent hours."
+   - A marker may end in an estimate: `pelhaim-milestone: <name> ~<duration>`, e.g. `~20m`, `~1h30m`, `~45s`.
+   - pelhaim learns a correction from completed stations: estimate × factor is the ETA. The factor and its rules are in §7.10.
+   - The station the train runs to shows a train-board clock, `ARR 14:52` in local time, in the pixel font. An overdue station turns amber (the matte yellow). A station with no estimate shows no clock.
 
 ## 6. Architecture
 
@@ -327,6 +349,7 @@ pub trait Tool: Send + Sync {                              // direct mode tools
 - **Model: event-sourced, light.**
   - The append-only table `events(id, ts, source, kind, payload_json)` holds pelhaim's *own* events: plans, approvals, answers, launches, alerts and dismissals.
   - Projected tables `projects, tracks, stations, trains, alerts, decisions` exist for fast startup.
+  - `station_timings(sample_key, project, estimate_secs, actual_secs, at)` holds the learned arrival-time correction (§7.10, **[Owner], 2026-11-24**). It holds numbers only: the key is `<session key>#<station ordinal>`, never a station name, and `INSERT OR IGNORE` on it makes a catch-up replay record nothing twice. Schema version 2 adds it.
   - On start, load the projections and replay events newer than the last snapshot.
 - **Observe mode stores no transcript text.** It stores only:
   - the path,
@@ -420,6 +443,8 @@ write = "on_click"                    # on_click | off   (never "auto" in v1)
 [board]
 palette = "matte"                     # matte | film | high_contrast
 motion = "full"                       # full | reduced
+float_alert_lines = true              # lines with open alerts float up
+max_stations = 5                      # stations shown per track, 1–20; older fold into "+N earlier" (§7.10)
 ```
 
 ### 6.7 CLI surface
@@ -550,6 +575,13 @@ Real agents don't report percentage progress, so pelhaim uses a rule that is hon
 
 So a train's motion means activity, never invented progress.
 
+**Observe mode, 2026-11-24 (§5.3):** stations come only from milestone markers (§7.10).
+
+- A track is one leg of `LEG_BLOCKS` (10) blocks per kept station, plus the open leg the train runs on. With no marker, it is just the open leg, so a track is never longer than `max_stations` legs.
+- A tool call steps the train one block, up to one block short of the leg's end. A train with no station ahead waits there: the track is bounded, and the tool-call counter in the inset keeps counting.
+- A marker closes the current station and opens the next one at the end of a new leg; the train starts that leg at block 0.
+- A main session's turn end stops the train where it is (it does not jump to a station). A subagent's finish berths it at the end of its leg, which closes its station.
+
 ### 7.5 Plan graph
 
 - A plan is a **DAG**. On every edit, validate:
@@ -614,7 +646,9 @@ So a train's motion means activity, never invented progress.
 **Lines**
 
 - **DISPATCH line:** always the top band. It holds orchestrator sessions: those listed in `[dispatch].sessions`, or self-tagged `pelhaim-project: dispatch`, plus a one-click "this is the orchestrator" action on any Unsorted session.
-  - Each tagged subagent spawned from a DISPATCH session leaves the DISPATCH track on a diverging track that crosses down onto its project's line, using the film's long diagonal junction-track geometry, and then runs on that line as its own track.
+  - **[Owner], 2026-11-24 (§5.3):** DISPATCH is a one-row header strip, `DISPATCH · N agents running`, and the orchestrator draws no train, track, stations or forks. N counts the active (not idle, done, stalled or failed) trains with an orchestrator among their ancestors, so a subagent's own subagents count too. The count turns yellow while an orchestrator has an open alert.
+  - Each tagged subagent spawned from a DISPATCH session runs on its project's line as its own track, starting at the line's left edge; no fork is drawn back to DISPATCH. The orchestrator's questions still raise popups and tray entries.
+  - *Before 2026-11-24:* each such subagent left the DISPATCH track on a diverging track that crossed down onto its project's line.
 - **Unsorted line:** the bottom band. Each untagged session or agent raises an `AssignProject` alert listing the configured projects as one-click options.
   - The answer is stored in SQLite per session id (and per subagent id), and survives restarts. It moves the train and every later subagent of that session.
 - **The orchestrator side:** the owner's orchestrator must be told to prefix each spawn prompt with the tag. That is a one-line addition to the owner's global `CLAUDE.md` delegation rules, in the setup repo. pelhaim's own Launch and Direct modes always write the tag themselves.
@@ -680,6 +714,41 @@ A process exit can't mean "step done", because a `claude -p --input-format strea
 - **Launch mode, Codex:** the same final-line JSON convention, read from the turn's last agent message. `--output-schema` (verified) can make the whole final message that object instead. The M2 spike picks one.
 - **Silence is not completion:** a turn that ends with neither signal leaves the station Active and raises a low-priority `Result` alert: "Train 1148 stopped without declaring the step complete". The owner can then nudge it or mark the step complete by hand.
 
+### 7.10 Milestone markers, stations and arrival times
+
+**[Owner], 2026-11-24** (§5.3) for the rule that stations come only from markers and carry arrival times. The parsing details, the factor's constants and the display are the **[Agent's call]**.
+
+**Marker format**
+
+```
+pelhaim-milestone: <name>
+pelhaim-milestone: <name> ~<duration>
+```
+
+- **Own line:** the marker must be a whole line. Leading spaces and tabs and one trailing `\r` are ignored, as for the tag; nothing else is. The key is case-sensitive and takes exactly one space after the colon. Text before the key on the same line (`` `pelhaim-milestone: x` ``, `> pelhaim-milestone: x`, prose) does not fire.
+- **Any line:** unlike the tag, a marker counts on any line of the text, so an agent can report several in one message, in order.
+- **Not in code fences:** lines inside a fenced block (` ``` ` or `~~~`, three or more; closed by the same character, at least as many, and nothing but spaces after) are ignored. An unclosed fence hides the rest of that text block.
+- **Where it is read:** Claude Code assistant `text` blocks and real user prompts (main and subagent, not meta, tool results or harness notices); Codex assistant `output_text` messages and owner prompts. Never tool inputs, tool results, harness-injected messages, or Codex's `task_complete` echo of the last message.
+- **Name:** sanitised like a title (controls and ANSI sequences become spaces, whitespace collapses, ends trimmed), then cut to **32** chars with `…`. An empty name is no marker, even with an estimate.
+- **Estimate:** an optional last word `~<duration>`, after a space. The duration is one or more `<digits><unit>` groups with units `h`, `m`, `s` in that order, each at most once, e.g. `~20m`, `~1h30m`, `~45s`, `~2h5m10s`. It must be above zero and at most 7 days. Anything else (`~soon`, `~0m`, `~30m1h`, `~1d`) stays part of the name. Config's `parse_duration` takes one unit only, so the marker has its own parser.
+- **Duplicates:** a name already seen on the same track, folded stations included, is a no-op: no station, no timing, no change to the estimate. A session reset clears the seen names.
+
+**Stations**
+
+- A marker closes the track's newest station (Done) and opens a new Active one, titled with the name, which the train then runs to (§7.4).
+- At most `[board].max_stations` stations (default 5, 1–20) are kept per track. Older ones are dropped from the front and counted in `Track.folded`, drawn as `+N earlier` at the start of the track and as the first row of the inset's station list. The train's leg and any fork point on the track shift with the drop.
+- A subagent starts with no station; its spawn description is its tag label only.
+- The platform bar is the train's state colour while the train stands at it, amber while the station is overdue, done grey once passed, and idle otherwise.
+
+**Arrival times**
+
+- A station's task runs from its marker to the next marker on the track, or to the train finishing (a subagent's finish). A main session going idle does not end it.
+- `ETA = marker time + estimate × factor`, fixed when the marker is read. A station without an estimate has no ETA and shows no clock.
+- **Display:** only the station the train runs to (the Active one) shows `ARR HH:MM`, in local time, in the 5x7 pixel font after its title; the inset shows the same after the station's name. It is the glyph colour, and the matte yellow once the clock is past the ETA ("overdue"). Done stations show no clock.
+- **Learning:** when a station with an estimate is closed, `(estimate, actual)` is recorded once, with the track's project slug (none on DISPATCH or UNSORTED), as an owner-side projection (§6.5). Numbers only; never the name.
+- **Factor:** the median of `actual / estimate` over the newest 20 samples of the station's project, once it has at least 5; else over the newest 20 samples overall, once there are at least 5; else 1. It is clamped to 0.25–8 so a station left open overnight cannot wreck every later ETA. The engine keeps the newest 1000 samples in memory.
+- A restart replays transcripts, so a station's ETA after a restart may use samples recorded after its marker. Accepted: the clock is a guide, not a record.
+
 ## 8. Event flow per mode
 
 ### 8.1 Observe mode
@@ -719,11 +788,8 @@ The adapter is `observe::claude` or `observe::codex`. Its capabilities are `read
   | `system` records whose subtype names an API error (exact subtypes [Open]) | `Failed`. |
 
   Permission prompts are probably not written to the JSONL (unverified), which is why the open-tool-call heuristic exists.
-- **Stations in observe mode** (no plan exists):
-  - Each owner prompt (a `user` record with a real prompt, not a tool result or meta) starts a new station on the session's track, titled with the prompt's first ~40 characters.
-  - Each subagent's single station is its `description`.
-  - On the DISPATCH line (§7.7), the stations are the orchestrator's own prompts, and each `Agent` call is a branch point.
-  - **[Agent's call]**. Alternative: one station per hour. Rejected because it carries no meaning.
+- **Stations in observe mode** (no plan exists): **[Owner], 2026-11-24** (§5.3), only `pelhaim-milestone:` markers create stations (§7.10). Prompts and tool calls never do, and the orchestrator on DISPATCH draws none.
+  - *Before 2026-11-24:* each owner prompt started a station titled with its first ~40 characters, and each subagent's single station was its `description`. Dropped because it made lines huge.
 - **Codex project:** also by tag (§7.7), read from the first user message in the rollout.
 
 **Codex** (`<codex_home>/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl`)
@@ -1169,7 +1235,8 @@ Why:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────────┐
-│ SAFEASCENT ●2      plan ─── migrate 0007 ─── backfill ─── Stage C1 ─── sign-off           │  ← line label (+ open-decision badge), stations
+│ DISPATCH · 6 agents running                                                              │  ← one-row strip, no train (§5.3)
+│ SAFEASCENT ●2      plan ─── migrate 0007 ─── backfill ─── Stage C1 ARR 14:52              │  ← line label (+ open-decision badge), stations, arrival clock
 │  ━━ ━━ ━━ ━[1423▶]━━ ━━ ━━ ━━ ━━ ━━ ━━ ━━                                                │  ← tracks, blocks, tags
 │  ━━ ━━ ━━ ━━ ━━ ━━ ━━[◀1148]━━ ━━ ╲                                                      │
 │                                      ╲━━ ━━ ━━ (magenta branch: detached)                │
@@ -1513,7 +1580,7 @@ Each has a default so work isn't blocked.
 8. **Take-over terminal mechanism on macOS** (Terminal vs iTerm2, a `.command` script vs AppleScript). Default: an `open -a` plus a generated script; the owner's terminal is set in config.
 9. **Tool calling on local models.** Which local models handle native `tools` reliably? Default: native when the server reports it, else the fenced-JSON fallback.
 10. **Non-Latin text** in transcripts and labels. Default: a fallback system font through `cosmic-text` / `swash`, for non-Latin only.
-11. **Station inference in observe mode.** Default: one station per owner prompt (§8.1). The builder may propose better once real data is on the board.
+11. **Station inference in observe mode.** Settled by the owner on 2026-11-24: explicit `pelhaim-milestone:` markers only (§5.3, §7.10).
 12. **Line ordering:** fixed config order vs float-on-alert. Default: config order, with lines holding open alerts floated up. DISPATCH is always first and Unsorted always last.
 13. **`step_complete` transport for Claude Launch:** an MCP tool vs the final-line JSON. Default: the MCP tool. Settle in the M2 spike.
 14. **Signing off a step that its dependants already branched from** (for example after reject-with-note produces new commits). Default: mark the dependants "base moved" and offer a rebase; never rebase automatically.
@@ -1565,7 +1632,7 @@ These are listed in order of how much they shape the build.
 5. Cleared-route green is a darker green than the working train (§7.2, §9.1). Approved 2026-11-23.
 6. The matte palette transform (chroma ×0.6, lightness ×0.88) and its start values (§9.1). Approved 2026-11-23.
 7. Density cuts: ≤4 visible tracks per line, crossovers only for real merges, idle lines fold (§9.1). Approved 2026-11-23.
-8. Observe stations = one per owner prompt; heuristics for "probably waiting" and "stalled" (§8.1). Approved 2026-11-23.
+8. Observe stations = one per owner prompt; heuristics for "probably waiting" and "stalled" (§8.1). Approved 2026-11-23. Stations replaced by milestone markers, owner decision 2026-11-24 (§5.3).
 9. Take over = an explicit detach (magenta), with the adapter swapped to observe (§8.2.4). Approved 2026-11-23.
 10. One popup at a time, plus a tray; ✕ dismisses to the tray, never deletes (§9.4). Approved 2026-11-23.
 11. Plan editing via `$EDITOR` TOML first, on-board editing later (§9.6). Approved 2026-11-23.
@@ -1581,3 +1648,5 @@ These are listed in order of how much they shape the build.
 21. The CLI mapping: Claude `--permission-mode auto` plus `--disallowedTools` for push and merge; Codex `-s workspace-write --approve-for-me`. Both pending spike confirmation (§10.1). Awaiting owner review.
 22. Keep-awake: `caffeinate -i -m -s -w <pid>` as a child process, not IOKit; no `-d`/`-u` by default; observed trains count; a 60 s release delay; waiting trains hold only when remote is on (§8.6). Awaiting owner review.
 23. Remote design: outbound-only relay, HPKE Auth mode, QR pairing with code confirmation, replay rules, high-risk alerts view-only from the phone, M5 placement (§8.7, §13). Awaiting owner review.
+24. Milestone marker details: own line, any line, not in fences, 32-char names, the `~h m s` estimate grammar up to 7 days, duplicates a no-op (§7.10). Awaiting owner review.
+25. ETA factor: median of actual/estimate, newest 20, at least 5 samples, project then global, clamped 0.25–8; only the Active station shows `ARR`; the DISPATCH count includes grandchildren (§7.7, §7.10). Awaiting owner review.

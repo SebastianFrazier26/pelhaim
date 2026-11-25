@@ -38,7 +38,12 @@ Look for:
 Check, ticking each:
 
 1. [ ] Every tagged Claude Code and Codex session or agent is on its project's line. Untagged ones are on UNSORTED, each with an Assign alert.
-2. [ ] The orchestrator session is on DISPATCH after you answer "This is the orchestrator" on its Assign popup (or list its id in `[dispatch].sessions`). Its tagged subagents branch off onto their lines; untagged ones land on UNSORTED with an Assign alert (DISPATCH is never inherited).
+2. [ ] (Owner decision 2026-11-24.) The orchestrator draws no train once it is tagged `dispatch`, listed in `[dispatch].sessions`, or marked "This is the orchestrator" on its Assign popup. DISPATCH is one row, `DISPATCH · N agents running`, and N matches the orchestrator's working subagents. Its tagged subagents run on their own lines with no fork back to DISPATCH; untagged ones land on UNSORTED with an Assign alert (DISPATCH is never inherited). A question from the orchestrator still opens a popup and turns the count yellow.
+2a. [ ] (Owner decision 2026-11-24.) Prompts make no stations: a session that never prints a marker has a bare track, and its train stops one block short of the end however many tool calls it makes.
+2b. [ ] (Owner decision 2026-11-24.) Have an agent print, on lines of their own, `pelhaim-milestone: plan ~2m` and later `pelhaim-milestone: build ~1h`. A station appears for each; `plan` turns done grey when `build` starts; `build` shows `ARR HH:MM` (local time, about an hour after the marker). A marker inside a code fence or mid-sentence makes nothing; repeating `plan` makes nothing.
+2c. [ ] (Owner decision 2026-11-24.) Wait past a short estimate (`pelhaim-milestone: quick ~1m`): after the clock passes, the `ARR` text and the platform bar turn amber.
+2d. [ ] (Owner decision 2026-11-24.) Six markers on one track show five stations and `+1 earlier` (or your `[board].max_stations`).
+2e. [ ] (Owner decision 2026-11-24.) After a few stations with estimates finish, `sqlite3 ~/.local/share/pelhaim/pelhaim.db 'select * from station_timings'` shows only keys, project slugs and numbers, never a station name.
 3. [ ] Ask an `AskUserQuestion` in any session: the train turns yellow and a popup opens within 2 s.
 4. [ ] Answer it in the session's terminal: within 2 s the popup flips to `STATUS: ANSWERED` and stays open to offer `[Log decision]`, until you close or dismiss it. A logged title carries only your answer, never the harness's "Your questions have been answered…" text.
 5. [ ] (Optional, writes the real log.) Click `[Log decision]` on an answered alert, then:

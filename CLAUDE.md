@@ -27,7 +27,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 `crates/pelhaim-core` (pure engine, no IO) ← `pelhaim-store`, `pelhaim-adapters`, `pelhaim-board`, `pelhaim-remote`; `pelhaim-board` ← `pelhaim-gpu`; everything ← `crates/pelhaim` (the binary, with logic in `src/lib.rs` and a thin `main.rs`).
 
-- `pelhaim-core`: the reducer (`Engine`), events, commands, snapshot, tag parsing, train numbers.
+- `pelhaim-core`: the reducer (`Engine`), events, commands, snapshot, tag and milestone-marker parsing, the ETA correction factor, train numbers.
 - `pelhaim-store`: SQLite owner events and projections; the `DECISION-LOG.md` writer and open-decision reader.
 - `pelhaim-adapters`: read-only tailer, home watcher, `ObserveClaude` / `ObserveCodex`, tested CLI versions.
 - `pelhaim-board`: palette, pixel font, layout, scene (display list + hits), input handling, a11y tree.
