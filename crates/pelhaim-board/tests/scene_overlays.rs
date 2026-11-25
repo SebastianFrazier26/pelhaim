@@ -117,7 +117,7 @@ fn observed_question_popup_snapshot() {
     assert_eq!(
         texts(&p),
         [
-            "1423 · SAFEASCENT / Stage C1 rehearsal",
+            "1423 · SAFEASCENT / rehearse",
             "STATUS: WAITING ON YOU",
             "Proceed to C1?",
             "[1] ☐ Proceed to C1 rehearsal — Proceed to C1 r…",
@@ -413,8 +413,8 @@ fn console_and_lamp_snapshot() {
     let mut snap = sample_board();
     let now = snap.now;
     let ka = &mut snap.keep_awake;
-    assert_eq!(lamp::label(ka, now), "AWAKE 2");
-    assert_eq!(lamp::tooltip(ka), ["held by 2 working trains"]);
+    assert_eq!(lamp::label(ka, now), "AWAKE 3");
+    assert_eq!(lamp::tooltip(ka), ["held by 3 working trains"]);
     ka.held = false;
     ka.count = 0;
     ka.on_battery = Some(true);
@@ -484,7 +484,7 @@ fn console_grows_to_six_rows_and_shows_selection_status() {
     assert_eq!(g1.rows, 1);
     assert_eq!(
         console::selection_status(&snap, &view).unwrap(),
-        "1423 · SAFEASCENT · waiting on you: Proceed to C1? · Stage C1 rehearsal"
+        "1423 · SAFEASCENT · waiting on you: Proceed to C1? · rehearse"
     );
     view.console.insert(&"x".repeat(5000));
     let g6 = console::geom(&input(&snap, &view));
@@ -567,7 +567,8 @@ fn inset_snapshot_contains_clip_and_state_word() {
     assert!(lines.contains(&"waiting on you: Proceed to C1?".to_string()));
     assert!(lines.contains(&"tail line 4".to_string()));
     assert!(!lines.contains(&"tail line 3".to_string()));
-    assert!(lines.contains(&"▸ Stage C1 rehearsal".to_string()));
+    assert!(lines.contains(&"☑ plan".to_string()));
+    assert!(lines.contains(&"▸ rehearse ARR 15:23".to_string()));
 
     let Prim::Clip(cr) = s.list.prims[clip] else {
         unreachable!()

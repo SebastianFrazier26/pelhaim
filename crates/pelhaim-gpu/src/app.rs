@@ -629,7 +629,12 @@ mod tests {
     fn paused_board_draws_the_frozen_snapshot() {
         let frozen = sample_board();
         let mut live = frozen.clone();
-        let gone = *live.trains.keys().next().unwrap();
+        let gone = live
+            .trains
+            .values()
+            .find(|t| live.tracks[&t.track].line != pelhaim_core::LineKey::Dispatch)
+            .unwrap()
+            .id;
         live.trains.remove(&gone);
         let view = ViewState {
             paused: true,

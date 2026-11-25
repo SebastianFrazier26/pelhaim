@@ -691,3 +691,51 @@ fn discovery_of_missing_home_is_empty() {
         .is_empty()
     );
 }
+
+fn assistant(at: &str, text: &str) -> String {
+    let text = serde_json::to_string(text).unwrap();
+    format!(
+        r#"{{"timestamp":"{at}","type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":{text}}}]}}}}"#
+    )
+}
+
+#[test]
+fn milestones_from_assistant_text_and_owner_prompts_only() {
+    let mut p = parser();
+    let lines = [
+        meta("M1", "2026-11-24T10:00:00Z"),
+        user(
+            "2026-11-24T10:00:01Z",
+            "<environment_context>\npelhaim-milestone: injected\n</environment_context>",
+        ),
+        user(
+            "2026-11-24T10:00:02Z",
+            "pelhaim-project: ethica\npelhaim-milestone: plan ~5m",
+        ),
+        assistant(
+            "2026-11-24T10:01:00Z",
+            "ok\npelhaim-milestone: build ~45s\n~~~\npelhaim-milestone: fenced\n~~~",
+        ),
+        r#"{"timestamp":"2026-11-24T10:02:00Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"pelhaim-milestone: build ~45s"}}"#.to_string(),
+    ];
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let events = feed_all(&mut p, &refs);
+    let got: Vec<(String, Option<u32>)> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Milestone {
+                name,
+                estimate_secs,
+                ..
+            } => Some((name.clone(), *estimate_secs)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("plan".to_string(), Some(300)),
+            ("build".to_string(), Some(45))
+        ]
+    );
+}

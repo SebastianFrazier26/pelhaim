@@ -81,6 +81,8 @@ pub struct Track {
     pub stations: Vec<StationId>,
     pub origin: Option<ForkId>,
     pub last_activity: Ts,
+    /// Stations dropped off the front past `max_stations`, drawn as "+N earlier".
+    pub folded: u32,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
@@ -89,6 +91,27 @@ pub struct Station {
     pub track: TrackId,
     pub title: String,
     pub status: StationStatus,
+    /// When its marker was read: the station's task starts there.
+    pub started: Ts,
+    pub estimate_secs: Option<u32>,
+    /// `started` + estimate × the learned correction factor at that moment.
+    pub eta: Option<Ts>,
+}
+
+impl Station {
+    pub fn overdue(&self, now: Ts) -> bool {
+        self.status == StationStatus::Active && self.eta.is_some_and(|eta| now > eta)
+    }
+}
+
+/// One completed station with an estimate: numbers only, never its name.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+pub struct StationTiming {
+    /// `<session key>#<station ordinal>`, so a catch-up replay records nothing twice.
+    pub key: String,
+    pub project: Option<String>,
+    pub estimate_secs: u32,
+    pub actual_secs: u32,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]

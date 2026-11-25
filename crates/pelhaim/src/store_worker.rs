@@ -161,6 +161,7 @@ fn owner_kind(ev: &OwnerEvent) -> &'static str {
         OwnerEvent::Answered { .. } => "Answered",
         OwnerEvent::DecisionLogged(_) => "DecisionLogged",
         OwnerEvent::DecisionExported { .. } => "DecisionExported",
+        OwnerEvent::StationTimed(_) => "StationTimed",
     }
 }
 

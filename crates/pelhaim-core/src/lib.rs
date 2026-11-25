@@ -1,6 +1,7 @@
 pub mod engine;
 pub mod event;
 pub mod ids;
+pub mod milestone;
 pub mod model;
 pub mod number;
 pub mod snapshot;
@@ -15,10 +16,13 @@ pub use engine::{
 };
 pub use event::{Event, QOption, Question, Tool, Ts};
 pub use ids::{AlertId, DecisionId, ForkId, SessionKey, StationId, TrackId, TrainId};
+pub use milestone::{
+    ESTIMATE_MAX_SECS, MILESTONE_NAME_MAX, Milestone, parse_estimate, parse_milestones,
+};
 pub use model::{
     Alert, AlertKind, AlertState, AnsweredBy, AssignOption, AssignTarget, Counters, Decision, Fork,
     KeepAwakeStatus, LEG_BLOCKS, LineKey, Origin, Position, RuntimeRef, Station, StationStatus,
-    TagResolution, Track, Train, TrainState, Who,
+    StationTiming, TagResolution, Track, Train, TrainState, Who,
 };
 pub use number::{format_train_number, train_number};
 pub use snapshot::{LineView, Snapshot};

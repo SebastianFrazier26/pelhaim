@@ -1073,7 +1073,10 @@ fn background_completion_adds_no_station() {
         .iter()
         .map(|id| snap.stations[id].title.clone())
         .collect();
-    assert_eq!(titles, ["Ship the release", "Publish the notes"]);
+    assert!(
+        titles.is_empty(),
+        "prompts and task notifications make no stations: {titles:?}"
+    );
 
     let finishes: Vec<_> = s4()
         .into_iter()
@@ -1186,4 +1189,67 @@ fn cold_start_notification_before_child_discovery_still_finishes_child() {
         );
         assert_eq!(engine.dropped_events(), 0, "with_meta={with_meta}");
     }
+}
+
+fn marks(events: &[Event]) -> Vec<(String, Option<u32>)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Milestone {
+                name,
+                estimate_secs,
+                ..
+            } => Some((name.clone(), *estimate_secs)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn milestones_from_assistant_text_and_prompts_only() {
+    let mut p = ClaudeFileParser::new(
+        SessionKey::claude("M"),
+        PathBuf::from("M.jsonl"),
+        None,
+        fallback(),
+    );
+    let events = feed_all(
+        &mut p,
+        &[
+            r#"{"type":"user","timestamp":"2026-11-24T10:00:00Z","message":{"content":"pelhaim-project: ethica\npelhaim-milestone: plan ~10m\nGo"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-11-24T10:01:00Z","message":{"stop_reason":"tool_use","content":[{"type":"text","text":"Plan done.\npelhaim-milestone: parser ~1h30m\n```\npelhaim-milestone: fenced\n```"},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"echo 'pelhaim-milestone: in a tool input'"}}]}}"#,
+            r#"{"type":"user","timestamp":"2026-11-24T10:02:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"pelhaim-milestone: in a tool result"}]}}"#,
+            r#"{"type":"user","timestamp":"2026-11-24T10:03:00Z","isMeta":true,"message":{"content":"pelhaim-milestone: injected"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-11-24T10:04:00Z","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"pelhaim-milestone: done"}]}}"#,
+        ],
+    );
+    assert_eq!(
+        marks(&events),
+        [
+            ("plan".to_string(), Some(600)),
+            ("parser".to_string(), Some(5400)),
+            ("done".to_string(), None),
+        ]
+    );
+    // The marker comes before the turn end that carries it.
+    let kinds = kinds(&events);
+    let last_mark = kinds.iter().rposition(|k| k == "Milestone").unwrap();
+    assert!(kinds[last_mark..].contains(&"TurnEnded".to_string()));
+}
+
+#[test]
+fn subagent_prompt_milestone_is_read() {
+    let mut p = ClaudeFileParser::new(
+        SessionKey::claude_sub("M", "a1"),
+        PathBuf::from("agent-a1.jsonl"),
+        Some(SessionKey::claude("M")),
+        fallback(),
+    );
+    let events = feed_all(
+        &mut p,
+        &[
+            r#"{"type":"user","timestamp":"2026-11-24T10:00:00Z","message":{"content":"pelhaim-project: ethica\npelhaim-milestone: judge ~20m"}}"#,
+        ],
+    );
+    assert_eq!(marks(&events), [("judge".to_string(), Some(1200))]);
 }

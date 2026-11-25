@@ -248,7 +248,7 @@ impl Engine {
     fn stall(&mut self, id: TrainId, now: Ts) {
         let t = self.train_mut(id);
         t.state = TrainState::Stalled;
-        let aid = AlertId(format!("stalled:{}:{}", t.session.0, t.position.leg));
+        let aid = AlertId(format!("stalled:{}:{}", t.session.0, t.counters.turns));
         let alert = self.new_alert(aid, id, AlertKind::Stalled, now, false);
         self.raise(alert);
     }

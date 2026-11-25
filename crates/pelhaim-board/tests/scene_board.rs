@@ -138,17 +138,16 @@ fn cleared_route_only_while_working() {
 }
 
 #[test]
-fn berthed_platform_bar_lit() {
+fn platform_bar_shows_done_overdue_and_arrival() {
     let p = palette(PaletteKind::Matte);
     let snap = sample_board();
-    let l = layout(&snap);
-    let list = scene(&snap).list;
-    let bar = |track: u32| {
+    let bar = |snap: &Snapshot, track: u32, i: usize| {
+        let l = layout(snap);
         let g = &l.tracks[&TrackId(track)];
         rect_color(
-            &list,
+            &scene(snap).list,
             R {
-                x: g.station_x[0],
+                x: g.station_x[i],
                 y: g.y - 9.0,
                 w: 33.0,
                 h: 5.0,
@@ -156,29 +155,124 @@ fn berthed_platform_bar_lit() {
         )
         .expect("platform bar")
     };
-    // Track 3: the cabn subagent finished, berthed at its station.
-    assert!(snap.trains[&TrainId(3)].position.berthed);
-    assert_eq!(bar(3), p.done);
-    // Track 7: the SafeAscent train is out on the leg, not berthed.
-    assert_eq!(bar(7), p.idle);
+    // Track 7: SafeAscent passed "plan" and runs to "rehearse", due 15:23.
+    assert_eq!(bar(&snap, 7, 0), p.done);
+    assert_eq!(bar(&snap, 7, 1), p.idle);
+    // Track 2: the ethica subagent is past its 14:10 arrival on "corpus pass".
+    assert_eq!(bar(&snap, 2, 1), p.wait);
 
     let mut snap = snap;
-    let t = snap.trains.get_mut(&TrainId(1)).unwrap();
+    let t = snap.trains.get_mut(&TrainId(2)).unwrap();
     t.position = Position {
-        leg: 0,
+        leg: 1,
         block: LEG_BLOCKS - 1,
         berthed: true,
     };
-    let l = layout(&snap);
-    let list = scene(&snap).list;
-    let g = &l.tracks[&TrackId(1)];
-    let r = R {
-        x: g.station_x[0],
-        y: g.y - 9.0,
-        w: 33.0,
-        h: 5.0,
+    assert_eq!(
+        bar(&snap, 2, 1),
+        p.work,
+        "a train at the platform lights it"
+    );
+}
+
+fn has_text(snap: &Snapshot, s: &str, x: f32, y: f32, cut: Cut, color: Rgba) -> bool {
+    let v = View {
+        k: 1.0,
+        ox: 0.0,
+        oy: 0.0,
     };
-    assert_eq!(rect_color(&list, r), Some(p.work));
+    let mut want = DisplayList::default();
+    draw_text(&mut want, &v, s, x, y, cut, LABEL_PX, color);
+    contains_run(&scene(snap).list.prims, &want.prims)
+}
+
+#[test]
+fn arrival_clock_follows_the_running_station() {
+    let p = palette(PaletteKind::Matte);
+    let snap = sample_board();
+    let l = layout(&snap);
+    let adv = pelhaim_board::font::advance(Cut::C5x7, LABEL_PX);
+    let at = |track: u32, title: &str| {
+        let g = &l.tracks[&TrackId(track)];
+        (
+            g.station_x[1] + text_width(title, Cut::C5x7, LABEL_PX) + adv,
+            g.y - 21.0,
+        )
+    };
+    let (x, y) = at(7, "rehearse");
+    assert!(has_text(&snap, "ARR 15:23", x, y, Cut::C5x7, p.glyph));
+    let (x, y) = at(2, "corpus pass");
+    assert!(
+        has_text(&snap, "ARR 14:10", x, y, Cut::C5x7, p.wait),
+        "overdue is amber"
+    );
+    // A station without an estimate shows no clock.
+    let g5 = &l.tracks[&TrackId(5)];
+    assert!(has_text(
+        &snap,
+        "review",
+        g5.station_x[4],
+        g5.y - 21.0,
+        Cut::C5x7,
+        p.label
+    ));
+    assert!(!has_text(
+        &snap,
+        "ARR",
+        g5.station_x[4] + text_width("review", Cut::C5x7, LABEL_PX) + adv,
+        g5.y - 21.0,
+        Cut::C5x7,
+        p.glyph
+    ));
+}
+
+#[test]
+fn folded_stations_show_earlier_count() {
+    let p = palette(PaletteKind::Matte);
+    let snap = sample_board();
+    assert_eq!(snap.tracks[&TrackId(5)].folded, 2);
+    assert_eq!(snap.tracks[&TrackId(5)].stations.len(), 5);
+    let l = layout(&snap);
+    let g = &l.tracks[&TrackId(5)];
+    assert_eq!(g.blocks.len(), 5 * usize::from(LEG_BLOCKS) + 2);
+    assert!(has_text(
+        &snap,
+        "+2 earlier",
+        g.x0,
+        g.y - 21.0,
+        Cut::C5x7,
+        p.glyph
+    ));
+}
+
+#[test]
+fn dispatch_is_a_one_row_count_strip() {
+    let p = palette(PaletteKind::Matte);
+    let snap = sample_board();
+    let l = layout(&snap);
+    let d = &l.lines[0];
+    assert_eq!(d.key, LineKey::Dispatch);
+    assert_eq!(d.h, 16.0);
+    assert!(!l.tracks.contains_key(&TrackId(1)), "no orchestrator track");
+    let after = TRACK_X0
+        + text_width("DISPATCH", Cut::C7x9, LABEL_PX)
+        + pelhaim_board::font::advance(Cut::C7x9, LABEL_PX);
+    assert!(has_text(
+        &snap,
+        "DISPATCH",
+        TRACK_X0,
+        d.top + 2.0,
+        Cut::C7x9,
+        p.label
+    ));
+    assert!(has_text(
+        &snap,
+        "· 1 agent running",
+        after,
+        d.top + 2.0,
+        Cut::C7x9,
+        p.glyph
+    ));
 }
 
 #[test]
@@ -198,7 +292,7 @@ fn waiting_pulses_unless_reduced_motion() {
         (
             tag_color(&list, &l, &snap, TrainId(7)),
             tag_color(&list, &l, &snap, TrainId(4)),
-            block_colors(&list, &l, TrackId(7))[1],
+            block_colors(&list, &l, TrackId(7))[usize::from(LEG_BLOCKS)],
         )
     };
     assert_eq!(at(0.0, false), (p.wait, p.wait, p.wait));
@@ -222,14 +316,19 @@ fn fork_diagonal_is_60_degrees() {
             _ => None,
         })
         .collect();
-    assert_eq!(diagonals.len(), 2, "one diagonal per fork");
+    assert_eq!(
+        diagonals.len(),
+        1,
+        "one diagonal per drawn fork; none off DISPATCH"
+    );
     for d in diagonals {
         assert!((d - 60.0).abs() < 0.01, "{d}");
     }
     let l = layout(&snap);
-    let (parent, child) = (&l.tracks[&TrackId(1)], &l.tracks[&TrackId(2)]);
+    let (parent, child) = (&l.tracks[&TrackId(7)], &l.tracks[&TrackId(8)]);
     let f = &snap.forks[0];
-    let (fx, fw) = parent.blocks[usize::from(f.at.block)];
+    let at = usize::from(f.at.leg) * usize::from(LEG_BLOCKS) + usize::from(f.at.block);
+    let (fx, fw) = parent.blocks[at];
     let dy = (child.y - parent.y).abs();
     let x0 = fx + fw + 6.0 + dy / 60f32.to_radians().tan() + 4.0;
     assert!((child.x0 - x0).abs() < 1e-3, "{} vs {x0}", child.x0);
@@ -251,8 +350,7 @@ fn fork_takes_child_colour_and_done_child_is_grey() {
             })
             .expect("fork diagonal")
     };
-    assert_eq!(diag_color(2), p.work);
-    assert_eq!(diag_color(3), p.done);
+    assert_eq!(diag_color(8), p.work);
     assert!(
         block_colors(&list, &l, TrackId(3))
             .iter()
@@ -447,9 +545,9 @@ fn mistagged_tag_has_fail_outline() {
 #[test]
 fn track_without_stations_draws_one_leg() {
     let snap = sample_board();
-    assert!(snap.tracks[&TrackId(5)].stations.is_empty());
+    assert!(snap.tracks[&TrackId(4)].stations.is_empty());
     let l = layout(&snap);
-    let g = &l.tracks[&TrackId(5)];
+    let g = &l.tracks[&TrackId(4)];
     assert_eq!(g.blocks.len(), usize::from(LEG_BLOCKS) + 2);
     assert!(g.station_x.is_empty());
     assert_eq!(g.x0, TRACK_X0);
@@ -468,7 +566,13 @@ fn hit_map_has_every_visible_train() {
     let s = build_scene(&input(&snap, &view));
     let mut ids = train_hits(&s);
     ids.sort();
-    let want: Vec<TrainId> = snap.trains.keys().copied().collect();
+    let want: Vec<TrainId> = snap
+        .trains
+        .values()
+        .filter(|t| snap.tracks[&t.track].line != LineKey::Dispatch)
+        .map(|t| t.id)
+        .collect();
+    assert!(!want.contains(&TrainId(1)));
     assert_eq!(ids, want);
     let v = view.view();
     for (r, h) in &s.hits {

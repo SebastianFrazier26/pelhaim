@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use pelhaim_core::{LEG_BLOCKS, LineKey, LineView, Snapshot, TrackId, Train, TrainState};
+use pelhaim_core::{
+    LEG_BLOCKS, LineKey, LineView, Snapshot, Station, StationStatus, TrackId, Train, TrainState,
+};
 
 use super::{
     BLOCK_GAP, BLOCK_LENGTHS, BUNDLE_GAP, Ctx, FOLDED_H, Hit, LABEL_PX, LABEL_ROW_H,
@@ -79,7 +81,10 @@ pub fn board_layout(snap: &Snapshot, expanded: &BTreeSet<LineKey>) -> Layout {
     for line in &snap.lines {
         let name_w = text_width(&line.name, Cut::C7x9, LABEL_PX);
         right = right.max(TRACK_X0 + name_w);
-        let h = if line.active {
+        let h = if line.key == LineKey::Dispatch {
+            right = right.max(TRACK_X0 + text_width(&dispatch_label(line), Cut::C7x9, LABEL_PX));
+            LABEL_ROW_H
+        } else if line.active {
             let shown = visible(line, expanded);
             for (i, &t) in line.tracks.iter().take(shown).enumerate() {
                 ys.insert(
@@ -116,7 +121,7 @@ pub fn board_layout(snap: &Snapshot, expanded: &BTreeSet<LineKey>) -> Layout {
         if let (Some(&sx), Some(t)) = (g.station_x.last(), snap.tracks.get(id))
             && let Some(st) = t.stations.last().and_then(|s| snap.stations.get(s))
         {
-            right = right.max(sx + text_width(&st.title, Cut::C5x7, LABEL_PX));
+            right = right.max(sx + text_width(&station_text(snap, st), Cut::C5x7, LABEL_PX));
         }
     }
     let bottom = lines.last().map_or(0.0, |l| l.top + l.h);
@@ -204,6 +209,9 @@ pub(super) fn draw(out: &mut Scene, cx: &Ctx) {
     let p = &cx.paint.p;
     for (line, lb) in cx.snap.lines.iter().zip(&cx.layout.lines) {
         draw_label(out, cx, line, lb.top);
+        if line.key == LineKey::Dispatch {
+            continue;
+        }
         if !line.active {
             let y = lb.top + LABEL_ROW_H + FOLDED_H / 2.0;
             cx.rect(
@@ -255,6 +263,40 @@ pub(super) fn draw(out: &mut Scene, cx: &Ctx) {
     }
 }
 
+fn running_words(n: u32) -> String {
+    match n {
+        1 => "1 agent running".into(),
+        n => format!("{n} agents running"),
+    }
+}
+
+fn dispatch_label(line: &LineView) -> String {
+    if line.active {
+        format!("{} · {}", line.name, running_words(line.running))
+    } else {
+        line.name.clone()
+    }
+}
+
+/// §7.10: a train-board clock, shown only on the station the train is running to.
+pub(super) fn arrival_text(snap: &Snapshot, st: &Station) -> Option<String> {
+    if st.status != StationStatus::Active {
+        return None;
+    }
+    let offset = chrono::FixedOffset::east_opt(snap.utc_offset_secs)?;
+    Some(format!(
+        "ARR {}",
+        st.eta?.with_timezone(&offset).format("%H:%M")
+    ))
+}
+
+fn station_text(snap: &Snapshot, st: &Station) -> String {
+    match arrival_text(snap, st) {
+        Some(arr) => format!("{} {arr}", st.title),
+        None => st.title.clone(),
+    }
+}
+
 fn draw_label(out: &mut Scene, cx: &Ctx, line: &LineView, top: f32) {
     let p = &cx.paint.p;
     let space = advance(Cut::C7x9, LABEL_PX);
@@ -273,6 +315,10 @@ fn draw_label(out: &mut Scene, cx: &Ctx, line: &LineView, top: f32) {
         x += text_width(s, Cut::C7x9, LABEL_PX) + space;
     };
     put(&line.name, p.label);
+    if line.key == LineKey::Dispatch && line.active {
+        let c = if line.has_open_alert { p.wait } else { p.glyph };
+        put(&format!("· {}", running_words(line.running)), c);
+    }
     if line.open_decisions > 0 {
         put(&format!("●{}", line.open_decisions), p.wait);
     }
@@ -327,8 +373,21 @@ fn draw_track(out: &mut Scene, cx: &Ctx, id: TrackId, g: &TrackGeom) {
         );
     }
 
-    let stations = cx.snap.tracks.get(&id).map_or(&[][..], |t| &t.stations[..]);
+    let track = cx.snap.tracks.get(&id);
+    let stations = track.map_or(&[][..], |t| &t.stations[..]);
     let adv = advance(Cut::C5x7, LABEL_PX);
+    if let Some(n) = track.map(|t| t.folded).filter(|&n| n > 0) {
+        draw_text(
+            &mut out.list,
+            cx.v,
+            &format!("+{n} earlier"),
+            g.x0,
+            g.y - STATION_LABEL_UP,
+            Cut::C5x7,
+            LABEL_PX,
+            p.glyph,
+        );
+    }
     for (i, (&sx, sid)) in g.station_x.iter().zip(stations).enumerate() {
         if let Some(st) = cx.snap.stations.get(sid) {
             let title = match g.station_x.get(i + 1) {
@@ -348,8 +407,36 @@ fn draw_track(out: &mut Scene, cx: &Ctx, id: TrackId, g: &TrackGeom) {
                 LABEL_PX,
                 p.label,
             );
+            if let Some(arr) = arrival_text(cx.snap, st) {
+                let c = if st.overdue(cx.snap.now) {
+                    p.wait
+                } else {
+                    p.glyph
+                };
+                draw_text(
+                    &mut out.list,
+                    cx.v,
+                    &arr,
+                    sx + text_width(&title, Cut::C5x7, LABEL_PX) + adv,
+                    g.y - STATION_LABEL_UP,
+                    Cut::C5x7,
+                    LABEL_PX,
+                    c,
+                );
+            }
         }
-        let berthed = train.filter(|t| t.position.berthed && usize::from(t.position.leg) == i);
+        let st = cx.snap.stations.get(sid);
+        let arrived = train.filter(|t| {
+            t.position.berthed
+                && usize::from(t.position.leg) == i
+                && t.position.block == LEG_BLOCKS - 1
+        });
+        let platform = match (arrived, st) {
+            (Some(t), _) => cx.paint.state(&t.state),
+            (None, Some(st)) if st.overdue(cx.snap.now) => p.wait,
+            (None, Some(st)) if st.status == StationStatus::Done => p.done,
+            _ => p.idle,
+        };
         cx.rect(
             &mut out.list,
             R {
@@ -358,7 +445,7 @@ fn draw_track(out: &mut Scene, cx: &Ctx, id: TrackId, g: &TrackGeom) {
                 w: PLATFORM_W,
                 h: PLATFORM_H,
             },
-            berthed.map_or(p.idle, |t| cx.paint.state(&t.state)),
+            platform,
         );
     }
 

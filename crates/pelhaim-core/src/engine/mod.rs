@@ -1,9 +1,10 @@
 mod alerts;
+pub mod eta;
 mod keep_awake;
 mod owner;
 mod sessions;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -11,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use crate::event::{Event, Ts};
 use crate::ids::{AlertId, DecisionId, ForkId, SessionKey, StationId, TrackId, TrainId};
 use crate::model::{
-    Alert, AlertState, AnsweredBy, AssignTarget, Decision, Fork, LineKey, Origin, Station, Track,
-    Train, TrainState,
+    Alert, AlertState, AnsweredBy, AssignTarget, Decision, Fork, LineKey, Origin, Station,
+    StationTiming, Track, Train, TrainState,
 };
 use crate::snapshot::{LineView, Snapshot};
 
@@ -42,6 +43,8 @@ pub struct EngineConfig {
     pub remote_enabled: bool,
     pub decision_log_write: bool,
     pub local_offset: chrono::FixedOffset,
+    /// Stations kept per track; older ones fold into "+N earlier". At least 1.
+    pub max_stations: usize,
 }
 
 impl Default for EngineConfig {
@@ -58,6 +61,7 @@ impl Default for EngineConfig {
             remote_enabled: false,
             decision_log_write: true,
             local_offset: chrono::FixedOffset::east_opt(0).expect("zero offset"),
+            max_stations: 5,
         }
     }
 }
@@ -174,6 +178,8 @@ pub enum OwnerEvent {
     DecisionExported {
         id: DecisionId,
     },
+    /// Not the owner's act, but owner-side state: the learned ETA correction.
+    StationTimed(StationTiming),
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug, Default)]
@@ -181,6 +187,8 @@ pub struct RestoredState {
     pub assignments: Vec<(SessionKey, AssignTarget, Ts)>,
     pub tray: BTreeSet<AlertId>,
     pub decisions: Vec<Decision>,
+    /// Oldest first.
+    pub timings: Vec<StationTiming>,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -242,10 +250,18 @@ pub struct Engine {
     dropped: u64,
     /// Subagent finishes that arrived before their child was known, keyed by child.
     early_finishes: BTreeMap<SessionKey, Ts>,
+    /// Oldest first, at most `TIMINGS_KEPT`.
+    timings: Vec<StationTiming>,
+    timed: HashSet<String>,
 }
+
+const TIMINGS_KEPT: usize = 1000;
 
 impl Engine {
     pub fn new(cfg: EngineConfig, restored: RestoredState) -> Engine {
+        let timed = restored.timings.iter().map(|t| t.key.clone()).collect();
+        let mut timings = restored.timings;
+        timings.drain(..timings.len().saturating_sub(TIMINGS_KEPT));
         Engine {
             cfg,
             version: 0,
@@ -273,6 +289,8 @@ impl Engine {
             effects: Vec::new(),
             dropped: 0,
             early_finishes: BTreeMap::new(),
+            timings,
+            timed,
         }
     }
 
@@ -348,11 +366,20 @@ impl Engine {
             tracks: self.tracks.clone(),
             stations: self.stations.clone(),
             trains: self.trains.clone(),
-            forks: self.forks.values().cloned().collect(),
+            // A fork off an orchestrator has no parent track drawn (§5.3).
+            forks: self
+                .forks
+                .values()
+                .filter(|f| {
+                    self.tracks.get(&f.parent_track).map(|t| &t.line) != Some(&LineKey::Dispatch)
+                })
+                .cloned()
+                .collect(),
             alerts,
             decisions_recent: decisions,
             decisions_unexported: self.decisions.iter().filter(|d| !d.written_to_md).count() as u32,
             keep_awake: self.keep_awake_status(),
+            utc_offset_secs: self.cfg.local_offset.local_minus_utc(),
         }
     }
 
@@ -396,6 +423,14 @@ impl Engine {
                 .then(tb.last_activity.cmp(&ta.last_activity))
                 .then(ta.id.cmp(&tb.id))
         });
+        // §5.3: the orchestrator draws no train; DISPATCH is a one-row count strip.
+        let orchestrators = tracks.len();
+        let running = if key == LineKey::Dispatch {
+            tracks.clear();
+            self.dispatch_running()
+        } else {
+            0
+        };
         let open_decisions = match &key {
             LineKey::Project(slug) => self.open_counts.get(slug).copied().unwrap_or(0),
             _ => 0,
@@ -406,12 +441,38 @@ impl Engine {
                 .iter()
                 .any(|a| a.is_open() && self.alert_line(a) == &key),
             format_untested: tracks.iter().any(|(_, t)| t.version_untested),
-            active: !tracks.is_empty(),
+            active: !tracks.is_empty() || orchestrators > 0,
+            running,
             tracks: tracks.iter().map(|(tr, _)| tr.id).collect(),
             open_decisions,
             key,
             name,
         }
+    }
+
+    /// Active trains with an orchestrator among their ancestors.
+    fn dispatch_running(&self) -> u32 {
+        let on_dispatch = |id: TrainId| {
+            self.trains
+                .get(&id)
+                .is_some_and(|t| self.tracks[&t.track].line == LineKey::Dispatch)
+        };
+        let descends = |t: &Train| {
+            let mut p = t.parent;
+            // The bound only guards against a malformed parent cycle.
+            for _ in 0..64 {
+                match p {
+                    Some(id) if on_dispatch(id) => return true,
+                    Some(id) => p = self.trains.get(&id).and_then(|t| t.parent),
+                    None => return false,
+                }
+            }
+            false
+        };
+        self.trains
+            .values()
+            .filter(|t| child_active(&t.state) && t.state != TrainState::Idle && descends(t))
+            .count() as u32
     }
 
     /// The alert's train's current line; `alert.line` once the train is gone.

@@ -567,8 +567,17 @@ fn sample_board_matches_its_description() {
     }
 
     let dispatch = s.lines.iter().find(|l| l.key == LineKey::Dispatch).unwrap();
-    assert_eq!(dispatch.tracks.len(), 1);
-    let subs: Vec<_> = s.trains.values().filter(|t| t.parent.is_some()).collect();
+    assert!(
+        dispatch.tracks.is_empty(),
+        "the orchestrator draws no train"
+    );
+    assert!(dispatch.active);
+    assert_eq!(dispatch.running, 1);
+    let subs: Vec<_> = s
+        .trains
+        .values()
+        .filter(|t| t.parent.is_some() && t.session.0.starts_with("claude:D1/"))
+        .collect();
     assert_eq!(subs.len(), 2);
     let on = |slug: &str| {
         subs.iter()
@@ -579,7 +588,11 @@ fn sample_board_matches_its_description() {
     };
     assert_eq!(on("ethica"), TrainState::Working);
     assert_eq!(on("cabn"), TrainState::Done);
-    assert_eq!(s.forks.len(), 2);
+    assert_eq!(
+        s.forks.len(),
+        1,
+        "only S1's fork; forks off DISPATCH are not drawn"
+    );
 
     let state_on = |slug: &str| {
         s.trains
@@ -604,6 +617,6 @@ fn sample_board_matches_its_description() {
     let sa = s.lines.iter().find(|l| l.name == "SAFEASCENT").unwrap();
     assert_eq!(sa.open_decisions, 2);
     assert!(s.keep_awake.held);
-    assert_eq!(s.keep_awake.count, 2);
+    assert_eq!(s.keep_awake.count, 3);
     assert_eq!(s.keep_awake.mechanism.as_deref(), Some("caffeinate"));
 }

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
-use pelhaim_core::{Event, SessionKey, Tool, Ts, sanitize_line, truncate_chars};
+use pelhaim_core::{Event, SessionKey, Tool, Ts, parse_milestones, sanitize_line, truncate_chars};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
@@ -28,6 +28,19 @@ const TAIL_MAX: usize = 120;
 
 fn str_at<'a>(v: &'a Value, path: &[&str]) -> Option<&'a str> {
     path.iter().try_fold(v, |v, k| v.get(k))?.as_str()
+}
+
+/// §7.10: one event per marker line, read from assistant text and real prompts only.
+fn milestones(key: &SessionKey, text: &str, at: Ts) -> impl Iterator<Item = Event> {
+    let key = key.clone();
+    parse_milestones(text)
+        .into_iter()
+        .map(move |m| Event::Milestone {
+            key: key.clone(),
+            name: m.name,
+            estimate_secs: m.estimate_secs,
+            at,
+        })
 }
 
 fn transcript_tail(key: &SessionKey, text: &str) -> Vec<Event> {

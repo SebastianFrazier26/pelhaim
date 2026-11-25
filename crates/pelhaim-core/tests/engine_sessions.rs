@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use pelhaim_core::testkit::{cfg, discover, engine, ts};
 use pelhaim_core::{
-    Engine, Event, Input, LEG_BLOCKS, LineKey, Position, SessionKey, Snapshot, StationStatus,
-    TagParse, TagResolution, Tool, Track, Train, TrainState, parse_tag, title_from_prompt,
+    Engine, Event, Input, LEG_BLOCKS, LineKey, Position, SessionKey, Snapshot, TagParse,
+    TagResolution, Tool, Track, Train, TrainState, parse_tag, title_from_prompt,
 };
 use proptest::prelude::*;
 
@@ -161,7 +161,10 @@ fn tagged_session_lands_on_its_line() {
     let t = train(&s, &s1);
     assert_eq!(t.tag, TagResolution::Tagged("ethica".into()));
     assert_eq!(track(&s, &s1).line, LineKey::Project("ethica".into()));
-    assert_eq!(station_titles(&s, &s1), vec!["Run judge".to_string()]);
+    assert!(
+        station_titles(&s, &s1).is_empty(),
+        "prompts make no stations"
+    );
     assert_eq!(
         line_tracks(&s, &LineKey::Project("ethica".into())),
         vec![t.track]
@@ -299,38 +302,15 @@ fn dispatch_subagents_branch_to_two_lines() {
     link(&mut e, &b, &s1, "toolu_B", "Sprite atlas");
 
     let s = e.snapshot();
-    let parent_track = train(&s, &s1).track;
     assert_eq!(track(&s, &s1).line, LineKey::Dispatch);
-    assert_eq!(s.forks.len(), 2);
-    assert!(s.forks.iter().all(|f| f.parent_track == parent_track));
-
-    let fa = s
-        .forks
-        .iter()
-        .find(|f| f.child_track == train(&s, &a).track)
-        .unwrap();
-    let fb = s
-        .forks
-        .iter()
-        .find(|f| f.child_track == train(&s, &b).track)
-        .unwrap();
-    assert_eq!(
-        fa.at,
-        Position {
-            leg: 0,
-            block: 1,
-            berthed: false
-        }
+    assert!(
+        s.forks.is_empty(),
+        "forks off the orchestrator are not drawn"
     );
-    assert_eq!(
-        fb.at,
-        Position {
-            leg: 0,
-            block: 2,
-            berthed: false
-        }
-    );
-    assert_eq!(track(&s, &a).origin, Some(fa.id));
+    assert!(track(&s, &a).origin.is_some());
+    let dispatch = s.lines.iter().find(|l| l.key == LineKey::Dispatch).unwrap();
+    assert!(dispatch.tracks.is_empty() && dispatch.active);
+    assert_eq!(dispatch.running, 2);
 
     assert_eq!(track(&s, &a).line, LineKey::Project("ethica".into()));
     assert_eq!(track(&s, &b).line, LineKey::Project("cabn".into()));
@@ -338,8 +318,8 @@ fn dispatch_subagents_branch_to_two_lines() {
     assert_eq!(train(&s, &a).parent, Some(train(&s, &s1).id));
     assert_eq!(train(&s, &a).label, "Judge run");
     assert_eq!(train(&s, &a).state, TrainState::Working);
-    assert_eq!(station_titles(&s, &a), vec!["Judge run".to_string()]);
-    assert_eq!(station_titles(&s, &b), vec!["Sprite atlas".to_string()]);
+    assert!(station_titles(&s, &a).is_empty());
+    assert!(station_titles(&s, &b).is_empty());
 }
 
 #[test]
@@ -387,7 +367,7 @@ fn spawn_link_run(link_first: bool) -> Snapshot {
     first_prompt(
         &mut e,
         &s1,
-        "pelhaim-project: dispatch\nFan out",
+        "pelhaim-project: ethica\nFan out",
         "2026-11-23T14:00:05Z",
     );
     tool_open(&mut e, &s1, "toolu_A", "Agent", "2026-11-23T14:00:10Z");
@@ -443,7 +423,7 @@ fn link_before_spawn_equals_spawn_before_link() {
 }
 
 #[test]
-fn train_never_passes_unfinished_station() {
+fn prompts_make_no_stations_and_motion_is_bounded() {
     let mut e = engine(&[]);
     let s1 = key("S1");
     discover_at(&mut e, s1.clone(), None, None, "2026-11-23T14:00:00Z");
@@ -459,20 +439,15 @@ fn train_never_passes_unfinished_station() {
     }
     let s = e.snapshot();
     let t = train(&s, &s1);
-    assert_eq!(
-        t.position,
-        Position {
-            leg: 0,
-            block: LEG_BLOCKS - 2,
-            berthed: false
-        }
-    );
+    let short = Position {
+        leg: 0,
+        block: LEG_BLOCKS - 2,
+        berthed: false,
+    };
+    assert_eq!(t.position, short);
     assert_eq!(t.state, TrainState::Working);
     assert_eq!(t.counters.tool_calls, 30);
-    assert_eq!(
-        s.stations[&track(&s, &s1).stations[0]].status,
-        StationStatus::Active
-    );
+    assert!(track(&s, &s1).stations.is_empty());
 
     turn_end(&mut e, &s1, "2026-11-23T14:01:00Z");
     let s = e.snapshot();
@@ -480,53 +455,21 @@ fn train_never_passes_unfinished_station() {
     assert_eq!(
         t.position,
         Position {
-            leg: 0,
-            block: LEG_BLOCKS - 1,
-            berthed: true
+            berthed: true,
+            ..short
         }
     );
     assert_eq!(t.state, TrainState::Idle);
     assert_eq!(t.counters.turns, 1);
-    assert_eq!(
-        s.stations[&track(&s, &s1).stations[0]].status,
-        StationStatus::Done
-    );
 
     tool_open(&mut e, &s1, "late", "Bash", "2026-11-23T14:01:05Z");
-    let s = e.snapshot();
-    let t = train(&s, &s1);
-    assert_eq!(
-        t.position,
-        Position {
-            leg: 0,
-            block: LEG_BLOCKS - 2,
-            berthed: false
-        }
-    );
-    assert_eq!(t.state, TrainState::Working);
-    assert_eq!(
-        s.stations[&track(&s, &s1).stations[0]].status,
-        StationStatus::Active
-    );
-
     prompt(&mut e, &s1, "Next thing", "2026-11-23T14:02:00Z");
     let s = e.snapshot();
     let t = train(&s, &s1);
-    assert_eq!(
-        t.position,
-        Position {
-            leg: 1,
-            block: 0,
-            berthed: false
-        }
-    );
-    let st = &track(&s, &s1).stations;
-    assert_eq!(s.stations[&st[0]].status, StationStatus::Done);
-    assert_eq!(s.stations[&st[1]].status, StationStatus::Active);
-    assert_eq!(
-        station_titles(&s, &s1),
-        vec!["Do the thing".to_string(), "Next thing".into()]
-    );
+    assert_eq!(t.position, short);
+    assert_eq!(t.state, TrainState::Working);
+    assert!(track(&s, &s1).stations.is_empty());
+    assert!(s.stations.is_empty());
 }
 
 proptest! {
@@ -604,10 +547,6 @@ fn agent_tool_result_finishes_child() {
     assert_eq!(child.state, TrainState::Done);
     assert!(child.position.berthed);
     assert_eq!(child.position.block, LEG_BLOCKS - 1);
-    assert_eq!(
-        s.stations[&track(&s, &a).stations[0]].status,
-        StationStatus::Done
-    );
     assert_eq!(train(&s, &s1).state, TrainState::Working);
 
     // The parent's result arrives before the child is linked: the child is Done as soon as it links.
@@ -652,7 +591,7 @@ fn replayable(e: &mut Engine, s1: &SessionKey, a: &SessionKey) {
     first_prompt(
         e,
         s1,
-        "pelhaim-project: dispatch\nFan out",
+        "pelhaim-project: ethica\nFan out",
         "2026-11-23T14:00:05Z",
     );
     tool_open(e, s1, "toolu_A", "Agent", "2026-11-23T14:00:10Z");
@@ -714,7 +653,7 @@ fn child_reset_relinks_to_a_single_fork() {
     link(&mut e, &a, &s1, "toolu_A", "A");
     let s = e.snapshot();
     assert_eq!(s.forks.len(), 1);
-    assert_eq!(track(&s, &a).stations.len(), 1);
+    assert!(track(&s, &a).stations.is_empty());
     assert_eq!(track(&s, &a).line, LineKey::Project("ethica".into()));
 }
 
@@ -1039,10 +978,6 @@ fn background_launch_keeps_child_active_and_parent_green() {
     let (parent, child) = (train(&s, &s1), train(&s, &a));
     assert_eq!(child.state, TrainState::Working);
     assert!(!child.position.berthed);
-    assert_eq!(
-        s.stations[&track(&s, &a).stations[0]].status,
-        StationStatus::Active
-    );
     assert_eq!(parent.state, TrainState::Working);
     assert!(parent.position.berthed, "the parent's own turn has ended");
     assert_eq!(parent.counters.turns, 1);

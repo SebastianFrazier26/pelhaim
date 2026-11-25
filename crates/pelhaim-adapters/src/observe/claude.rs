@@ -8,7 +8,7 @@ use pelhaim_core::{
 use serde_json::Value;
 
 use super::version::{CLAUDE_TESTED, is_untested};
-use super::{str_at, transcript_tail};
+use super::{milestones, str_at, transcript_tail};
 
 const LAUNCH_ACK: &str = "Async agent launched";
 
@@ -356,6 +356,7 @@ impl ClaudeFileParser {
                 at,
             });
         }
+        out.extend(milestones(&self.key, &text, at));
         out
     }
 
@@ -438,6 +439,7 @@ impl ClaudeFileParser {
                 Some("text") => {
                     let text = block.get("text").and_then(Value::as_str).unwrap_or("");
                     out.extend(transcript_tail(&self.key, text));
+                    out.extend(milestones(&self.key, text, at));
                 }
                 _ => {}
             }

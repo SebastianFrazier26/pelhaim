@@ -161,6 +161,12 @@ mod tests {
         discover_with_cwd(&mut e, &s1, None, "14:23:00");
         tag(&mut e, &s1, "pelhaim-project: ethica\nSENTINEL_PROMPT");
         prompt(&mut e, &s1, "SENTINEL_PROMPT", t("14:23:10"));
+        milestone(
+            &mut e,
+            &s1,
+            "pelhaim-milestone: SENTINEL_PROMPT ~5m",
+            t("14:23:10"),
+        );
         e.apply(ev(Event::TranscriptTail {
             key: s1.clone(),
             line: "SENTINEL_TAIL".into(),

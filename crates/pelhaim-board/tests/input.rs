@@ -315,7 +315,11 @@ fn jk_next_prev_in_layout_order() {
         key(&mut view, &snap, UiKey::Char('j'));
         order.push(view.selected.unwrap().0);
     }
-    assert_eq!(order, [1, 7, 4, 2, 3, 5, 6, 1]);
+    assert_eq!(
+        order,
+        [7, 8, 4, 2, 3, 5, 6, 7],
+        "the orchestrator (1) draws no train"
+    );
     key(&mut view, &snap, UiKey::Char('k'));
     assert_eq!(view.selected, Some(TrainId(6)));
     view.selected = None;
@@ -327,10 +331,10 @@ fn jk_next_prev_in_layout_order() {
 fn click_yellow_tag_opens_alert_double_click_opens_inset() {
     let snap = sample_board();
     let mut view = ViewState::default();
-    click_hit(&mut view, &snap, Hit::Train(TrainId(1)), false);
+    click_hit(&mut view, &snap, Hit::Train(TrainId(2)), false);
     assert_eq!(
         (view.selected, view.popup.is_none()),
-        (Some(TrainId(1)), true)
+        (Some(TrainId(2)), true)
     );
 
     click_hit(&mut view, &snap, Hit::Train(TrainId(7)), false);
@@ -342,11 +346,11 @@ fn click_yellow_tag_opens_alert_double_click_opens_inset() {
     assert_eq!(popup_id(&view), Some(STALLED), "stalled is yellow too");
 
     view.popup = None;
-    click_hit(&mut view, &snap, Hit::Train(TrainId(1)), true);
+    click_hit(&mut view, &snap, Hit::Train(TrainId(2)), true);
     assert_eq!(
         view.inset,
         Some(InsetState {
-            train: TrainId(1),
+            train: TrainId(2),
             opened_s: 5.0
         })
     );

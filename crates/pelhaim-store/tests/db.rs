@@ -1,7 +1,7 @@
 use chrono::{NaiveDate, TimeZone, Utc};
 use pelhaim_core::{
     AlertId, AssignTarget, Choice, Decision, DecisionId, Origin, OwnerEvent, RestoredState,
-    SessionKey, Ts, Who,
+    SessionKey, StationTiming, Ts, Who,
 };
 use pelhaim_store::Store;
 use rusqlite::Connection;
@@ -284,7 +284,7 @@ fn reopening_db_keeps_data_and_schema_version() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
     let kinds: Vec<String> = conn
         .prepare("SELECT kind FROM events ORDER BY id")
         .unwrap()
@@ -334,4 +334,54 @@ fn append_succeeds_while_another_connection_reads_or_briefly_writes() {
     s.append(&dismissed(2), t(2)).unwrap();
     release.join().unwrap();
     assert_eq!(s.load().unwrap().tray.len(), 2);
+}
+
+fn timing(key: &str, project: Option<&str>, est: u32, actual: u32) -> StationTiming {
+    StationTiming {
+        key: key.into(),
+        project: project.map(str::to_string),
+        estimate_secs: est,
+        actual_secs: actual,
+    }
+}
+
+#[test]
+fn station_timings_load_in_order_once_and_survive_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = open(&dir);
+    let a = timing("claude:S1#0", Some("ethica"), 600, 900);
+    let b = timing("claude:S2#3", None, 60, 30);
+    s.append(&OwnerEvent::StationTimed(a.clone()), t(1))
+        .unwrap();
+    s.append(&OwnerEvent::StationTimed(b.clone()), t(2))
+        .unwrap();
+    s.append(
+        &OwnerEvent::StationTimed(timing("claude:S1#0", None, 1, 1)),
+        t(3),
+    )
+    .unwrap();
+    assert_eq!(s.load().unwrap().timings, [a.clone(), b.clone()]);
+    s.rebuild_projections().unwrap();
+    assert_eq!(s.load().unwrap().timings, [a, b]);
+}
+
+#[test]
+fn a_v1_store_migrates_to_v2() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pelhaim.db");
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE events(id INTEGER PRIMARY KEY, ts TEXT NOT NULL, source TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL);
+             CREATE TABLE assignments(session_key TEXT PRIMARY KEY, target_json TEXT NOT NULL, at TEXT NOT NULL);
+             CREATE TABLE tray(alert_id TEXT PRIMARY KEY);
+             CREATE TABLE decisions(id INTEGER PRIMARY KEY, json TEXT NOT NULL, written_to_md INTEGER NOT NULL);
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+    }
+    let mut s = Store::open(&path).unwrap();
+    s.append(&OwnerEvent::StationTimed(timing("k#0", None, 10, 20)), t(1))
+        .unwrap();
+    assert_eq!(s.load().unwrap().timings.len(), 1);
 }

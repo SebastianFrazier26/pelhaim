@@ -70,6 +70,13 @@ pub enum Event {
         title: String,
         at: Ts,
     },
+    /// One `pelhaim-milestone:` line (§7.10).
+    Milestone {
+        key: SessionKey,
+        name: String,
+        estimate_secs: Option<u32>,
+        at: Ts,
+    },
     ToolOpened {
         key: SessionKey,
         call_id: String,
@@ -163,6 +170,7 @@ impl Event {
             SessionDiscovered { started: at, .. }
             | SpawnRequested { at, .. }
             | PromptStarted { at, .. }
+            | Milestone { at, .. }
             | ToolOpened { at, .. }
             | ToolClosed { at, .. }
             | QuestionAsked { at, .. }
@@ -185,6 +193,7 @@ impl Event {
             | TitleChanged { key, .. }
             | SessionTag { key, .. }
             | PromptStarted { key, .. }
+            | Milestone { key, .. }
             | ToolOpened { key, .. }
             | ToolClosed { key, .. }
             | QuestionAsked { key, .. }

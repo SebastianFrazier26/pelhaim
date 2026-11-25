@@ -1,13 +1,14 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use super::Engine;
 use super::alerts::child_active;
+use super::eta::correction_factor;
+use super::{Effect, Engine, OwnerEvent};
 use crate::event::{Event, Tool, Ts};
 use crate::ids::{SessionKey, TrainId};
 use crate::model::{
     AssignTarget, Counters, Fork, LEG_BLOCKS, LineKey, Position, RuntimeRef, Station,
-    StationStatus, TagResolution, Track, Train, TrainState,
+    StationStatus, StationTiming, TagResolution, Track, Train, TrainState,
 };
 use crate::number::train_number;
 use crate::tag::{DISPATCH_SLUG, TagParse};
@@ -21,6 +22,8 @@ pub(super) struct SessionMeta {
     description: Option<String>,
     self_tag: Option<TagParse>,
     spawn_tag: Option<TagParse>,
+    /// Every milestone name seen on this track, folded ones included.
+    milestones: BTreeSet<String>,
 }
 
 pub(super) struct PendingSpawn {
@@ -183,7 +186,13 @@ impl Engine {
                     self.try_connect(&call);
                 }
             }
-            Event::PromptStarted { title, .. } => self.prompt_started(id, &key, title),
+            Event::PromptStarted { .. } => self.prompt_started(id, &key),
+            Event::Milestone {
+                name,
+                estimate_secs,
+                at,
+                ..
+            } => self.milestone(id, &key, name, estimate_secs, at),
             Event::ToolOpened {
                 call_id, name, at, ..
             } => {
@@ -227,13 +236,13 @@ impl Engine {
             } => self.question_answered(id, &key, &call_id, answer, at),
             Event::TurnEnded { final_text, at, .. } => {
                 let subagent = self.meta[&key].subagent;
-                self.berth(id);
-                let t = self.train_mut(id);
-                t.state = if subagent {
-                    TrainState::Done
+                if subagent {
+                    self.finish(id);
                 } else {
-                    TrainState::Idle
-                };
+                    self.train_mut(id).position.berthed = true;
+                    self.train_mut(id).state = TrainState::Idle;
+                }
+                let t = self.train_mut(id);
                 t.counters.turns += 1;
                 if !subagent {
                     self.settle_after_turn(id);
@@ -351,6 +360,7 @@ impl Engine {
                 stations: Vec::new(),
                 origin: None,
                 last_activity: d.started,
+                folded: 0,
             },
         );
         self.trains.insert(
@@ -387,10 +397,11 @@ impl Engine {
                 description: None,
                 self_tag: None,
                 spawn_tag: None,
+                milestones: BTreeSet::new(),
             },
         );
         if d.parent.is_some() {
-            self.start_subagent(id);
+            self.train_mut(id).state = TrainState::Working;
         }
         self.relabel(&d.key);
         self.resolve(&d.key);
@@ -398,26 +409,6 @@ impl Engine {
             self.settle_after_turn(p);
         }
         true
-    }
-
-    fn start_subagent(&mut self, id: TrainId) {
-        let track = self.trains[&id].track;
-        let station = self.ids.station();
-        self.stations.insert(
-            station,
-            Station {
-                id: station,
-                track,
-                title: String::new(),
-                status: StationStatus::Active,
-            },
-        );
-        self.tracks
-            .get_mut(&track)
-            .expect("track")
-            .stations
-            .push(station);
-        self.train_mut(id).state = TrainState::Working;
     }
 
     fn touch(&mut self, id: TrainId, at: Ts) {
@@ -437,49 +428,145 @@ impl Engine {
         }
     }
 
-    fn prompt_started(&mut self, id: TrainId, key: &SessionKey, title: String) {
+    /// Prompts never make stations (§5.3); one only restarts the train.
+    fn prompt_started(&mut self, id: TrainId, key: &SessionKey) {
         if self.meta[key].subagent {
             if matches!(self.trains[&id].state, TrainState::Failed(_)) {
                 self.set_working(id);
             }
             return;
         }
-        let track = self.trains[&id].track;
-        if let Some(prev) = self.tracks[&track].stations.last() {
-            self.stations.get_mut(prev).expect("station").status = StationStatus::Done;
+        let t = self.train_mut(id);
+        t.position.berthed = false;
+        t.state = TrainState::Working;
+    }
+
+    /// §7.10: the marker closes the track's current station and opens the next
+    /// one, which the train then runs towards. A repeated name is a no-op.
+    fn milestone(
+        &mut self,
+        id: TrainId,
+        key: &SessionKey,
+        name: String,
+        estimate_secs: Option<u32>,
+        at: Ts,
+    ) {
+        if !self.meta_mut(key).milestones.insert(name.clone()) {
+            return;
         }
+        self.close_station(id, at);
+        let track = self.trains[&id].track;
+        let factor = correction_factor(&self.timings, self.project_of(track));
+        let eta = estimate_secs.and_then(|e| {
+            let secs = (f64::from(e) * factor).round() as i64;
+            chrono::TimeDelta::try_seconds(secs).and_then(|d| at.checked_add_signed(d))
+        });
         let station = self.ids.station();
         self.stations.insert(
             station,
             Station {
                 id: station,
                 track,
-                title,
+                title: name,
                 status: StationStatus::Active,
+                started: at,
+                estimate_secs,
+                eta,
             },
         );
-        let stations = &mut self.tracks.get_mut(&track).expect("track").stations;
-        stations.push(station);
-        let leg = (stations.len() - 1) as u16;
-        let t = self.train_mut(id);
-        t.position = Position {
-            leg,
-            block: 0,
-            berthed: false,
+        self.tracks
+            .get_mut(&track)
+            .expect("track")
+            .stations
+            .push(station);
+        self.fold(track);
+        let leg = (self.tracks[&track].stations.len() - 1) as u16;
+        let p = &mut self.train_mut(id).position;
+        p.leg = leg;
+        p.block = 0;
+    }
+
+    fn project_of(&self, track: crate::ids::TrackId) -> Option<&str> {
+        match &self.tracks.get(&track)?.line {
+            LineKey::Project(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Marks the newest station Done and records its timing once.
+    fn close_station(&mut self, id: TrainId, at: Ts) {
+        let t = &self.trains[&id];
+        let track = &self.tracks[&t.track];
+        let Some(&sid) = track.stations.last() else {
+            return;
         };
-        t.state = TrainState::Working;
+        let ordinal = track.folded as usize + track.stations.len() - 1;
+        let key = format!("{}#{ordinal}", t.session.0);
+        let project = self.project_of(t.track).map(str::to_string);
+        let st = self.stations.get_mut(&sid).expect("station");
+        let was_active = st.status == StationStatus::Active;
+        st.status = StationStatus::Done;
+        let (Some(estimate_secs), true) = (st.estimate_secs, was_active) else {
+            return;
+        };
+        let actual = (at - st.started)
+            .num_seconds()
+            .clamp(0, i64::from(u32::MAX));
+        if !self.timed.insert(key.clone()) {
+            return;
+        }
+        let timing = StationTiming {
+            key,
+            project,
+            estimate_secs,
+            actual_secs: actual as u32,
+        };
+        self.timings.push(timing.clone());
+        if self.timings.len() > super::TIMINGS_KEPT {
+            self.timings.remove(0);
+        }
+        self.effects
+            .push(Effect::Persist(OwnerEvent::StationTimed(timing), at));
+    }
+
+    /// Keeps at most `max_stations`; legs and fork points shift with the drop.
+    fn fold(&mut self, track: crate::ids::TrackId) {
+        let cap = self.cfg.max_stations.max(1);
+        while self.tracks[&track].stations.len() > cap {
+            let tr = self.tracks.get_mut(&track).expect("track");
+            let gone = tr.stations.remove(0);
+            tr.folded += 1;
+            self.stations.remove(&gone);
+            let shift = |p: &mut Position| {
+                if p.leg == 0 {
+                    p.block = 0;
+                } else {
+                    p.leg -= 1;
+                }
+            };
+            for f in self.forks.values_mut().filter(|f| f.parent_track == track) {
+                shift(&mut f.at);
+            }
+            let session = self.tracks[&track].session.clone();
+            for p in self
+                .spawn_requests
+                .values_mut()
+                .filter(|p| p.parent == session)
+            {
+                shift(&mut p.at);
+            }
+            if let Some(&tid) = self.by_key.get(&session) {
+                shift(&mut self.train_mut(tid).position);
+            }
+        }
     }
 
     fn tool_opened(&mut self, id: TrainId) {
         let t = self.train_mut(id);
         t.counters.tool_calls += 1;
-        if t.position.berthed {
-            t.position.berthed = false;
-            t.position.block = LEG_BLOCKS - 2;
-            self.set_current_station(id, StationStatus::Active);
-        } else {
-            t.position.block = (t.position.block + 1).min(LEG_BLOCKS - 2);
-        }
+        t.position.berthed = false;
+        // Bounded: with no station ahead the train waits one block short of the end.
+        t.position.block = (t.position.block + 1).min(LEG_BLOCKS - 2);
         self.set_working(id);
     }
 
@@ -490,24 +577,14 @@ impl Engine {
         }
     }
 
-    fn berth(&mut self, id: TrainId) {
-        let p = &mut self.train_mut(id).position;
-        p.block = LEG_BLOCKS - 1;
-        p.berthed = true;
-        self.set_current_station(id, StationStatus::Done);
-    }
-
+    /// The train arrives: it berths at the end of its leg.
     fn finish(&mut self, id: TrainId) {
-        self.berth(id);
-        self.train_mut(id).state = TrainState::Done;
-    }
-
-    fn set_current_station(&mut self, id: TrainId, status: StationStatus) {
-        let t = &self.trains[&id];
-        let current = self.tracks[&t.track].stations.get(t.position.leg as usize);
-        if let Some(s) = current.and_then(|s| self.stations.get_mut(s)) {
-            s.status = status;
-        }
+        let at = self.trains[&id].counters.last_seen;
+        let t = self.train_mut(id);
+        t.position.block = LEG_BLOCKS - 1;
+        t.position.berthed = true;
+        t.state = TrainState::Done;
+        self.close_station(id, at);
     }
 
     fn try_connect(&mut self, call: &str) {
@@ -553,15 +630,8 @@ impl Engine {
             .clone()
             .or_else(|| meta.description.clone())
             .unwrap_or_else(|| format!("{:?} session", meta.tool));
-        let station_title = meta.description.clone().unwrap_or_else(|| label.clone());
-        let subagent = meta.subagent;
         let id = self.by_key[key];
-        let t = self.train_mut(id);
-        t.label = label;
-        let track = t.track;
-        if subagent && let Some(s) = self.tracks[&track].stations.first() {
-            self.stations.get_mut(s).expect("station").title = station_title;
-        }
+        self.train_mut(id).label = label;
     }
 
     pub(super) fn resolve(&mut self, key: &SessionKey) {
@@ -657,7 +727,9 @@ impl Engine {
 
     fn reset(&mut self, id: TrainId, key: &SessionKey) {
         let track = self.trains[&id].track;
-        for s in std::mem::take(&mut self.tracks.get_mut(&track).expect("track").stations) {
+        let tr = self.tracks.get_mut(&track).expect("track");
+        tr.folded = 0;
+        for s in std::mem::take(&mut tr.stations) {
             self.stations.remove(&s);
         }
         self.clear_forks_of(track);
@@ -672,8 +744,9 @@ impl Engine {
         t.counters.turns = 0;
         t.tail.clear();
         self.meta_mut(key).self_tag = None;
+        self.meta_mut(key).milestones.clear();
         if self.meta[key].subagent {
-            self.start_subagent(id);
+            self.train_mut(id).state = TrainState::Working;
         }
         self.relabel(key);
         self.resolve(key);

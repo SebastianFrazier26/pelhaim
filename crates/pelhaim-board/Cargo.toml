@@ -10,6 +10,7 @@ publish = false
 workspace = true
 
 [dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 pelhaim-core = { path = "../pelhaim-core" }
 serde = { version = "1.0.229", features = ["derive"] }
 unicode-segmentation = "1.13.3"

@@ -4,7 +4,7 @@ use pelhaim_core::{Event, SessionKey, Tool, Ts, parse_tag, title_from_prompt};
 use serde_json::Value;
 
 use super::version::{CODEX_TESTED, is_untested};
-use super::{str_at, transcript_tail};
+use super::{milestones, str_at, transcript_tail};
 
 /// Records held before `session_meta`; past this a file without one is not a rollout.
 const PENDING_MAX: usize = 4096;
@@ -184,7 +184,12 @@ impl CodexFileParser {
                 let content = payload.get("content");
                 match str_at(payload, &["role"]) {
                     Some("user") => self.user(key, &input_text(content, "input_text"), at),
-                    Some("assistant") => transcript_tail(&key, &input_text(content, "output_text")),
+                    Some("assistant") => {
+                        let text = input_text(content, "output_text");
+                        let mut out = transcript_tail(&key, &text);
+                        out.extend(milestones(&key, &text, at));
+                        out
+                    }
                     _ => Vec::new(),
                 }
             }
@@ -239,10 +244,11 @@ impl CodexFileParser {
             });
         }
         out.push(Event::PromptStarted {
-            key,
+            key: key.clone(),
             title: title_from_prompt(prompt),
             at,
         });
+        out.extend(milestones(&key, prompt, at));
         out
     }
 }

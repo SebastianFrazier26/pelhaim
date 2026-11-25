@@ -19,6 +19,8 @@ pub struct Snapshot {
     pub decisions_recent: Vec<Decision>,
     pub decisions_unexported: u32,
     pub keep_awake: KeepAwakeStatus,
+    /// The local offset arrival clocks are shown in.
+    pub utc_offset_secs: i32,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
@@ -30,4 +32,6 @@ pub struct LineView {
     pub format_untested: bool,
     pub has_open_alert: bool,
     pub active: bool,
+    /// DISPATCH only: active trains descended from an orchestrator session.
+    pub running: u32,
 }

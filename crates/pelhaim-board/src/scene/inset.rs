@@ -52,12 +52,20 @@ pub fn info_lines(snap: &Snapshot, t: &Train, p: &Palette) -> Vec<(String, Rgba)
     ));
     out.push((format!("session {}", session_id(t)), p.glyph));
     if let Some(track) = snap.tracks.get(&t.track) {
+        if track.folded > 0 {
+            out.push((format!("+{} earlier", track.folded), p.done));
+        }
         for st in track.stations.iter().filter_map(|id| snap.stations.get(id)) {
             let (mark, c) = match st.status {
                 StationStatus::Done => ('☑', p.done),
+                StationStatus::Active if st.overdue(snap.now) => ('▸', p.wait),
                 StationStatus::Active => ('▸', p.work),
             };
-            out.push((format!("{mark} {}", st.title), c));
+            let text = match super::lines::arrival_text(snap, st) {
+                Some(arr) => format!("{mark} {} {arr}", st.title),
+                None => format!("{mark} {}", st.title),
+            };
+            out.push((text, c));
         }
     }
     for l in &t.tail[t.tail.len().saturating_sub(TAIL_LINES)..] {

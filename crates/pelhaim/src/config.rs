@@ -181,6 +181,8 @@ pub struct BoardCfg {
     pub palette: Palette,
     pub motion: Motion,
     pub float_alert_lines: bool,
+    /// Stations shown per track; older ones fold into "+N earlier" (§7.10).
+    pub max_stations: usize,
 }
 
 impl Default for BoardCfg {
@@ -189,6 +191,7 @@ impl Default for BoardCfg {
             palette: Palette::Matte,
             motion: Motion::Full,
             float_alert_lines: true,
+            max_stations: 5,
         }
     }
 }
@@ -270,6 +273,8 @@ pub fn parse_duration(s: &str) -> Result<Option<Duration>, ConfigError> {
         .map(|secs| Some(Duration::from_secs(secs)))
         .ok_or_else(bad)
 }
+
+const MAX_STATIONS_LIMIT: usize = 20;
 
 const LATER_SECTIONS: [&str; 5] = ["launch", "direct", "approval", "project_overrides", "git"];
 
@@ -383,6 +388,12 @@ impl Config {
                 }
             }
         }
+        if !(1..=MAX_STATIONS_LIMIT).contains(&self.board.max_stations) {
+            return Err(invalid(
+                "board.max_stations",
+                format!("must be between 1 and {MAX_STATIONS_LIMIT}"),
+            ));
+        }
         let homes = [self.claude_home(env), self.codex_home(env)];
         let checks = [
             ("decision_log.path", self.decision_log_path(env)),
@@ -426,6 +437,7 @@ impl Config {
             remote_enabled: self.remote.enabled,
             decision_log_write: self.decision_log.write == LogWrite::OnClick,
             local_offset,
+            max_stations: self.board.max_stations,
         }
     }
 
@@ -590,6 +602,7 @@ mod tests {
         assert_eq!(c.board.palette, Palette::HighContrast);
         assert_eq!(c.board.motion, Motion::Reduced);
         assert!(!c.board.float_alert_lines);
+        assert_eq!(c.board.max_stations, 3);
         assert_eq!(c.decision_log.write, LogWrite::Off);
         assert_eq!(c.observe.active_window.0, Duration::from_secs(24 * 3600));
         assert_eq!(c.observe.stall_after.0, Some(Duration::from_secs(15 * 60)));
@@ -611,11 +624,22 @@ mod tests {
         assert_eq!(e.stall_after, Some(Duration::from_secs(15 * 60)));
         assert!(e.result_alerts);
         assert!(!e.float_alert_lines);
+        assert_eq!(e.max_stations, 3);
         assert!(!e.keep_awake_enabled);
         assert!(!e.include_observed);
         assert!(e.remote_enabled);
         assert!(!e.decision_log_write);
         assert_eq!(e.local_offset, FixedOffset::east_opt(3600).unwrap());
+    }
+
+    #[test]
+    fn max_stations_is_bounded() {
+        for bad in ["0", "21"] {
+            let msg = err_text(&format!("[board]\nmax_stations = {bad}\n"));
+            assert!(msg.contains("board.max_stations"), "{msg}");
+        }
+        let l = load_str("[board]\nmax_stations = 1\n", MapEnv::new("/tmp/h")).unwrap();
+        assert_eq!(l.config.board.max_stations, 1);
     }
 
     #[test]

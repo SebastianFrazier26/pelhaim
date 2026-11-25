@@ -1,10 +1,12 @@
 use std::path::Path;
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use pelhaim_core::{AlertId, AssignTarget, Decision, OwnerEvent, RestoredState, SessionKey, Ts};
+use pelhaim_core::{
+    AlertId, AssignTarget, Decision, OwnerEvent, RestoredState, SessionKey, StationTiming, Ts,
+};
 use rusqlite::{Connection, Transaction, params};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 // The unique index keeps decision logging idempotent across restarts: the
 // engine forgets which alerts it logged, and may log one again under a new id.
@@ -15,6 +17,12 @@ CREATE TABLE tray(alert_id TEXT PRIMARY KEY);
 CREATE TABLE decisions(id INTEGER PRIMARY KEY, json TEXT NOT NULL, written_to_md INTEGER NOT NULL);
 CREATE UNIQUE INDEX decisions_source_alert ON decisions(json_extract(json, '$.source_alert'));
 PRAGMA user_version = 1;
+";
+
+// Numbers only: the sample key is a session key and an ordinal, never a station name.
+const SCHEMA_V2: &str = "
+CREATE TABLE station_timings(sample_key TEXT PRIMARY KEY, project TEXT, estimate_secs INTEGER NOT NULL, actual_secs INTEGER NOT NULL, at TEXT NOT NULL);
+PRAGMA user_version = 2;
 ";
 
 #[derive(Debug)]
@@ -134,10 +142,24 @@ impl Store {
             "SELECT json, written_to_md FROM decisions ORDER BY id LIMIT ?1",
             -1,
         )?;
+        let mut stmt = self.conn.prepare(
+            "SELECT sample_key, project, estimate_secs, actual_secs FROM station_timings ORDER BY rowid",
+        )?;
+        let timings = stmt
+            .query_map([], |r| {
+                Ok(StationTiming {
+                    key: r.get(0)?,
+                    project: r.get(1)?,
+                    estimate_secs: r.get(2)?,
+                    actual_secs: r.get(3)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
         Ok(RestoredState {
             assignments,
             tray,
             decisions,
+            timings,
         })
     }
 
@@ -152,7 +174,9 @@ impl Store {
 
     pub fn rebuild_projections(&mut self) -> Result<(), StoreError> {
         let tx = self.conn.transaction()?;
-        tx.execute_batch("DELETE FROM assignments; DELETE FROM tray; DELETE FROM decisions;")?;
+        tx.execute_batch(
+            "DELETE FROM assignments; DELETE FROM tray; DELETE FROM decisions; DELETE FROM station_timings;",
+        )?;
         let events = {
             let mut stmt = tx.prepare("SELECT ts, payload_json FROM events ORDER BY id")?;
             stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
@@ -187,6 +211,11 @@ fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
     if version < 1 {
         let tx = conn.transaction()?;
         tx.execute_batch(SCHEMA_V1)?;
+        tx.commit()?;
+    }
+    if version < 2 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(SCHEMA_V2)?;
         tx.commit()?;
     }
     Ok(())
@@ -225,6 +254,13 @@ fn project(tx: &Transaction<'_>, ev: &OwnerEvent, at: Ts) -> Result<(), StoreErr
                 params![id.0],
             )?;
         }
+        OwnerEvent::StationTimed(t) => {
+            tx.execute(
+                "INSERT OR IGNORE INTO station_timings(sample_key, project, estimate_secs, actual_secs, at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![t.key, t.project, t.estimate_secs, t.actual_secs, ts_text(at)],
+            )?;
+        }
     }
     Ok(())
 }
@@ -237,6 +273,7 @@ fn kind(ev: &OwnerEvent) -> &'static str {
         OwnerEvent::Answered { .. } => "Answered",
         OwnerEvent::DecisionLogged(_) => "DecisionLogged",
         OwnerEvent::DecisionExported { .. } => "DecisionExported",
+        OwnerEvent::StationTimed(_) => "StationTimed",
     }
 }
 

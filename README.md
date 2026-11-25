@@ -1,6 +1,6 @@
 # pelhaim
 
-pelhaim is a desktop board for running and watching AI coding agents. Each project is a train line, each agent session is a train on it, each task the agent works through is a station, and when an agent stops to ask you something, an alert pops up on the board. It runs locally and works with Claude Code and Codex.
+pelhaim is a desktop board for running and watching AI coding agents. Each project is a train line, each agent session is a train on it, each milestone the agent reports is a station, and when an agent stops to ask you something, an alert pops up on the board. It runs locally and works with Claude Code and Codex.
 
 The look is inspired by the control-room board in a 2009 film.
 
@@ -18,9 +18,9 @@ This build ships **Observe only**.
 
 ## What the board shows
 
-- **Lines** are projects from your config, in `order`. **DISPATCH** is always the top band and holds orchestrator sessions; **UNSORTED** is the bottom band and holds sessions pelhaim cannot place.
-- **Trains** are sessions (Claude Code sessions and subagents, Codex rollouts). A subagent spawned from a DISPATCH session leaves on a diverging track that crosses down onto its project's line.
-- **Stations** are the prompts a session works through.
+- **Lines** are projects from your config, in `order`. **DISPATCH** is always the top row: a one-line strip, `DISPATCH · 6 agents running`, counting the agents your orchestrator has running. The orchestrator itself draws no train, but its questions still pop up. **UNSORTED** is the bottom band and holds sessions pelhaim cannot place.
+- **Trains** are sessions (Claude Code sessions and subagents, Codex rollouts). An orchestrator's subagents appear on their own project lines. A train steps one block per tool call, on a track of bounded length.
+- **Stations** are milestones the agent reports with a marker line (see below). Prompts never make stations. At most `max_stations` show per track (default 5); older ones fold into `+N earlier`. The station a train is running to shows its arrival clock, `ARR 14:52`, which turns amber when overdue.
 
 Colour legend (default `matte` palette):
 
@@ -45,6 +45,19 @@ pelhaim-project: <slug>
 ```
 
 `<slug>` is `[a-z0-9-]+` and must match a `[[project]].slug`. The reserved slug `dispatch` marks an orchestrator and puts it on DISPATCH (or list its session id under `[dispatch].sessions`). An untagged session goes to UNSORTED with an Assign alert listing your projects; your answer is stored and survives restarts. Tell your orchestrator to prefix every spawn prompt with the tag.
+
+## Milestones: stations and arrival times
+
+A station appears when a session's text (assistant output or your prompt) has a line that is exactly:
+
+```
+pelhaim-milestone: <name>
+pelhaim-milestone: <name> ~<estimate>
+```
+
+The marker must be on its own line (leading spaces are fine) and outside code fences. Names are cut to 32 characters; a name already used on the same track is ignored. The estimate is optional: `~45s`, `~20m`, `~1h30m` (units `h`, `m`, `s`, in that order, up to 7 days). A marker closes the previous station and starts the next.
+
+The arrival clock is the marker's time plus the estimate times a learned factor. pelhaim records each finished station's estimate and actual time (numbers only, never the name) and uses the median actual/estimate ratio of the last 20, per project once it has 5, else across all projects, else 1. Tell your agents to emit a marker, with an honest estimate, as they start each step.
 
 ## Config
 
@@ -79,6 +92,7 @@ write = "on_click"         # on_click | off
 [board]
 palette = "matte"          # matte | film | high_contrast
 motion = "full"            # full | reduced
+max_stations = 5           # stations shown per track (1–20)
 ```
 
 Sections for later milestones (`[launch]`, `[direct]`, `[approval]`, `[project_overrides]`, `[git]`) are rejected with the milestone that brings them.

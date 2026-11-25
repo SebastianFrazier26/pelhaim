@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use crate::engine::{Effect, Engine, EngineConfig, Input, ProjectCfg, RestoredState};
 use crate::event::{Event, QOption, Question, Tool, Ts};
 use crate::ids::SessionKey;
+use crate::milestone::parse_milestones;
 use crate::snapshot::Snapshot;
 use crate::tag::parse_tag;
 
@@ -84,6 +85,21 @@ pub fn prompt(e: &mut Engine, key: &SessionKey, title: &str, at: Ts) -> Vec<Effe
         title: title.into(),
         at,
     }))
+}
+
+/// Every `pelhaim-milestone:` line in `text`, as an adapter would send them.
+pub fn milestone(e: &mut Engine, key: &SessionKey, text: &str, at: Ts) -> Vec<Effect> {
+    parse_milestones(text)
+        .into_iter()
+        .flat_map(|m| {
+            e.apply(ev(Event::Milestone {
+                key: key.clone(),
+                name: m.name,
+                estimate_secs: m.estimate_secs,
+                at,
+            }))
+        })
+        .collect()
 }
 
 pub fn tool_open(e: &mut Engine, key: &SessionKey, call: &str, name: &str, at: Ts) -> Vec<Effect> {
@@ -222,6 +238,20 @@ pub fn sample_board() -> Snapshot {
     );
     discover_in(&mut e, &a1, Some(&d1), t("13:31:02"));
     link(&mut e, &a1, &d1, "toolu_e");
+    milestone(
+        &mut e,
+        &a1,
+        "pelhaim-milestone: scenarios ~15m",
+        t("13:31:10"),
+    );
+    milestone(
+        &mut e,
+        &a1,
+        "pelhaim-milestone: corpus pass ~20m",
+        t("13:50:00"),
+    );
+    tool_open(&mut e, &a1, "toolu_a1r", "Read", t("13:50:30"));
+    tool_close(&mut e, &a1, "toolu_a1r", t("13:50:40"));
     spawn(
         &mut e,
         &d1,
@@ -254,6 +284,15 @@ pub fn sample_board() -> Snapshot {
         key: l1.clone(),
         at: t("14:00:05"),
     }));
+    for (i, name) in [
+        "baseline", "slots", "rerun", "ablate", "plots", "write-up", "review",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let at = t("14:00:10") + secs(30 * i as i64);
+        milestone(&mut e, &l1, &format!("pelhaim-milestone: {name}"), at);
+    }
     e.apply(ev(Event::Failed {
         key: l1.clone(),
         reason: "aborted".into(),
@@ -274,6 +313,28 @@ pub fn sample_board() -> Snapshot {
         "pelhaim-project: safeascent\nStage C1 rehearsal",
     );
     prompt(&mut e, &s1, "Stage C1 rehearsal", t("14:23:10"));
+    milestone(&mut e, &s1, "pelhaim-milestone: plan ~5m", t("14:23:15"));
+    tool_open(&mut e, &s1, "toolu_p", "Read", t("14:23:20"));
+    tool_close(&mut e, &s1, "toolu_p", t("14:23:25"));
+    milestone(
+        &mut e,
+        &s1,
+        "pelhaim-milestone: rehearse ~1h",
+        t("14:23:40"),
+    );
+    let b1 = SessionKey::claude_sub("S1", "b1");
+    spawn(
+        &mut e,
+        &s1,
+        "toolu_b",
+        "Risk model check",
+        "pelhaim-project: safeascent",
+        t("14:23:45"),
+    );
+    discover_in(&mut e, &b1, Some(&s1), t("14:23:47"));
+    link(&mut e, &b1, &s1, "toolu_b");
+    tool_open(&mut e, &b1, "toolu_b1", "Grep", t("14:29:00"));
+    tool_close(&mut e, &b1, "toolu_b1", t("14:29:30"));
     tool_open(&mut e, &s1, "toolu_q", "AskUserQuestion", t("14:24:00"));
     ask(
         &mut e,
