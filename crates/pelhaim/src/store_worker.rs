@@ -108,11 +108,23 @@ impl Worker {
     /// between leaves the row unexported; the replayed export finds the entry's
     /// marker and writes nothing, so the log never gets a duplicate.
     fn export(&self, d: &Decision) -> Event {
-        let Some(p) = self.projects.iter().find(|p| p.slug == d.project) else {
-            return Event::DecisionExportFailed {
-                id: d.id,
-                reason: format!("no configured project {}", d.project),
-            };
+        // An auto-created line (§7.7) has no `[[project]]`: its display name is
+        // the section key, matched and created by the same rules as `name`.
+        let fallback;
+        let p = match self.projects.iter().find(|p| p.slug == d.project) {
+            Some(p) => p,
+            None => match &d.project_name {
+                Some(name) => {
+                    fallback = LogProject::new(&d.project, name, None);
+                    &fallback
+                }
+                None => {
+                    return Event::DecisionExportFailed {
+                        id: d.id,
+                        reason: format!("no configured project {}", d.project),
+                    };
+                }
+            },
         };
         match write_decision(&self.log_path, p, d) {
             Ok(()) => Event::DecisionExported {
@@ -230,6 +242,7 @@ mod tests {
             origin: Origin::Local,
             source_alert: Some(AlertId("q:claude:S1:toolu_q".into())),
             written_to_md: false,
+            project_name: None,
         }
     }
 
@@ -309,6 +322,82 @@ mod tests {
         assert!(
             matches!(recv(&mut rx), Event::DecisionExportFailed { reason, .. } if reason.contains("nowhere"))
         );
+    }
+
+    const AUTO_LOG: &str = "# Decision log\n\n## How to use this log\n\nRead me.\n\n## SafeAscent\n\n### Open decisions (need you)\n\n### Decided\n\n- older\n\n---\n\n## cabn and the portfolio\n\n### Decided\n\n---\n\n## Standing rules\n\n- rule\n";
+
+    fn auto(project: &str, name: &str) -> Decision {
+        Decision {
+            project_name: Some(name.into()),
+            ..decision(project)
+        }
+    }
+
+    /// The entry sits under `heading`'s `### Decided` and every other byte is kept.
+    fn assert_inserted_under(before: &str, after: &str, d: &Decision, heading: &str) {
+        let entry = pelhaim_store::decision_log::render_entry(d, "\n");
+        let at = after
+            .find(&entry)
+            .unwrap_or_else(|| panic!("{after}\n---\n{entry}"));
+        assert_eq!(after.matches(&entry).count(), 1);
+        assert_eq!(after.replacen(&entry, "", 1), before);
+        let section = after[..at].rfind("\n## ").unwrap();
+        assert!(after[section + 1..].starts_with(heading), "{after}");
+    }
+
+    #[test]
+    fn auto_line_decisions_go_under_the_line_name() {
+        let f = fixture(Some(AUTO_LOG));
+        let (w, mut rx) = worker(&f);
+        let sa = auto("safeascent", "SafeAscent");
+        w.send(StoreJob::Export(sa.clone()));
+        assert!(matches!(recv(&mut rx), Event::DecisionExported { .. }));
+        let after_sa = std::fs::read_to_string(&f.log).unwrap();
+        assert_inserted_under(AUTO_LOG, &after_sa, &sa, "## SafeAscent\n");
+
+        // The space-suffix rule: "cabn" matches "## cabn and the portfolio".
+        let cabn = Decision {
+            id: DecisionId(2),
+            title: "Tiles: pixel".into(),
+            ..auto("cabn", "cabn")
+        };
+        w.send(StoreJob::Export(cabn.clone()));
+        assert!(matches!(recv(&mut rx), Event::DecisionExported { .. }));
+        let after = std::fs::read_to_string(&f.log).unwrap();
+        assert_inserted_under(&after_sa, &after, &cabn, "## cabn and the portfolio\n");
+
+        // Idempotent: the replayed export finds its marker and writes nothing.
+        w.send(StoreJob::Export(cabn));
+        assert!(matches!(recv(&mut rx), Event::DecisionExported { .. }));
+        assert_eq!(std::fs::read_to_string(&f.log).unwrap(), after);
+    }
+
+    #[test]
+    fn auto_line_names_never_match_the_log_scaffolding() {
+        for name in ["How", "Standing"] {
+            let f = fixture(Some(AUTO_LOG));
+            let (w, mut rx) = worker(&f);
+            let d = auto(&name.to_lowercase(), name);
+            w.send(StoreJob::Export(d.clone()));
+            assert!(matches!(recv(&mut rx), Event::DecisionExported { .. }));
+            let after = std::fs::read_to_string(&f.log).unwrap();
+            let new = format!("## {name}\n\n### Open decisions (need you)\n\n### Decided\n\n");
+            let at = after.find(&new).unwrap_or_else(|| panic!("{after}"));
+            assert!(at < after.find("## Standing rules").unwrap());
+            assert!(after.contains("## How to use this log\n\nRead me.\n"));
+            assert!(after.contains("## Standing rules\n\n- rule\n"));
+        }
+    }
+
+    #[test]
+    fn auto_line_export_never_creates_the_log() {
+        let f = fixture(None);
+        let (w, mut rx) = worker(&f);
+        w.send(StoreJob::Export(auto("safeascent", "SafeAscent")));
+        assert!(
+            matches!(recv(&mut rx), Event::DecisionExportFailed { reason, .. } if reason.contains("not found"))
+        );
+        assert!(!f.log.exists());
     }
 
     #[test]

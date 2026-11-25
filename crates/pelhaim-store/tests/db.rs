@@ -22,6 +22,7 @@ fn decision(id: i64, alert: &str) -> Decision {
         origin: Origin::Local,
         source_alert: Some(AlertId(alert.into())),
         written_to_md: false,
+        project_name: None,
     }
 }
 

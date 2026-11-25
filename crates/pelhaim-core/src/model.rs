@@ -268,6 +268,10 @@ pub struct Decision {
     pub origin: Origin,
     pub source_alert: Option<AlertId>,
     pub written_to_md: bool,
+    /// The line's display name when `project` is an auto-created line (§7.7),
+    /// so the log writer has a section key without a `[[project]]` entry.
+    #[serde(default)]
+    pub project_name: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug, Default)]

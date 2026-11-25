@@ -290,6 +290,12 @@ impl Engine {
             }
             _ => return Err(LogError::NotAnswered),
         };
+        let project_name = (!self.configured(&project)).then(|| {
+            self.auto_lines
+                .get(&project)
+                .cloned()
+                .unwrap_or_else(|| project.clone())
+        });
         let id = DecisionId(self.decisions.iter().map(|d| d.id.0).max().unwrap_or(0) + 1);
         let decision = Decision {
             id,
@@ -301,6 +307,7 @@ impl Engine {
             origin: Origin::Local,
             source_alert: Some(alert_id.clone()),
             written_to_md: false,
+            project_name,
         };
         self.decisions.push(decision.clone());
         let alert = &mut self.alerts[idx];
