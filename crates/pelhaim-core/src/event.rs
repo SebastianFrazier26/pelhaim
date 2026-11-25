@@ -28,6 +28,16 @@ pub struct QOption {
     pub description: String,
 }
 
+/// The main repository a session's cwd lies in (§7.7): a linked worktree
+/// resolves to the repository it was added from.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub struct RepoRef {
+    /// The main repository's directory name, as on disk.
+    pub name: String,
+    /// The main repository's root, canonical where it could be resolved.
+    pub root: PathBuf,
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
 pub enum Event {
     SessionDiscovered {
@@ -36,6 +46,8 @@ pub enum Event {
         parent: Option<SessionKey>,
         path: PathBuf,
         cwd: Option<String>,
+        /// Filled by the observer from `cwd`; parsers leave it `None`.
+        repo: Option<RepoRef>,
         version: Option<String>,
         started: Ts,
     },

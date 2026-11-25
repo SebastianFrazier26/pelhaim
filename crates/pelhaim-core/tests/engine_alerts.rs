@@ -334,6 +334,7 @@ fn tagged_session_has_no_assign_alert() {
         parent: None,
         path: "/fixtures/S1.jsonl".into(),
         cwd: None,
+        repo: None,
         version: None,
         started: t0(),
     }));
@@ -406,7 +407,7 @@ fn subagent_gets_no_assign_alert_until_linked() {
 
 #[test]
 fn mis_tagged_prefills_closest_slug() {
-    let mut e = engine(&["safeascent", "ethica"]);
+    let mut e = engine_tags_only(&["safeascent", "ethica"]);
     let k = key("M1");
     discover_in(&mut e, &k, None, t0());
     tag(&mut e, &k, "pelhaim-project: ethika\nhi");

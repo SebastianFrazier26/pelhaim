@@ -26,6 +26,8 @@ pub enum TagResolution {
     Untagged,
     MisTagged(String),
     Assigned(AssignTarget),
+    /// Untagged, placed by the repository its cwd lies in (§7.7, 2026-11-24).
+    Repo(String),
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]

@@ -148,6 +148,7 @@ mod tests {
             parent: parent.cloned(),
             path: PathBuf::from("/fixtures/x.jsonl"),
             cwd: Some("/SENTINEL_CWD".into()),
+            repo: None,
             version: None,
             started: t(at),
         }));

@@ -122,6 +122,7 @@ fn s1_full_event_sequence() {
             parent: None,
             path: project_dir().join("S1.jsonl"),
             cwd: Some("/Users/owner".into()),
+            repo: None,
             version: Some("2.1.331".into()),
             started: ts("2026-11-23T14:23:00Z"),
         }
@@ -418,6 +419,7 @@ fn subagent_first_user_is_tag_only() {
             parent: Some(SessionKey::claude("S1")),
             path: project_dir().join("S1/subagents/agent-a2.jsonl"),
             cwd: Some("/Users/owner/Developer".into()),
+            repo: None,
             version: Some("2.1.331".into()),
             started: ts("2026-11-23T14:23:08Z"),
         }
@@ -562,6 +564,7 @@ fn records_before_first_timestamp_are_buffered_until_discovered() {
                 parent: None,
                 path: PathBuf::from("F.jsonl"),
                 cwd: Some("/w".into()),
+                repo: None,
                 version: Some("2.1.331".into()),
                 started: ts("2026-11-23T10:00:00Z"),
             },
@@ -601,6 +604,7 @@ fn cwd_learned_after_discovery_rediscovers() {
         parent: None,
         path: project_dir().join("S2.jsonl"),
         cwd: cwd.map(Into::into),
+        repo: None,
         version: version.map(Into::into),
         started: ts("2026-11-23T09:00:00Z"),
     };

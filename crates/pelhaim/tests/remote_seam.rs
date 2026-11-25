@@ -114,6 +114,7 @@ fn discovered(key: &SessionKey, at: Ts) -> Input {
         parent: None,
         path: PathBuf::from(format!("/fixtures/{}.jsonl", key.0)),
         cwd: None,
+        repo: None,
         version: None,
         started: at,
     })

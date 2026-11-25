@@ -158,6 +158,7 @@ fn c1_full_event_sequence() {
             parent: None,
             path: day_dir().join(C1),
             cwd: Some("/Users/owner/Developer/ethica".into()),
+            repo: None,
             version: Some("0.158.0".into()),
             started: ts("2026-11-23T09:42:00Z"),
         }
@@ -337,6 +338,7 @@ fn lines_before_meta_buffered() {
                 parent: None,
                 path: PathBuf::from("rollout-X.jsonl"),
                 cwd: Some("/w/M".into()),
+                repo: None,
                 version: Some("0.158.0".into()),
                 started: ts("2026-11-23T10:00:02Z"),
             },
@@ -375,6 +377,7 @@ fn started_falls_back_to_line_timestamp() {
             parent: None,
             path: PathBuf::from("rollout-X.jsonl"),
             cwd: None,
+            repo: None,
             version: None,
             started: ts("2026-11-23T10:00:09Z"),
         }

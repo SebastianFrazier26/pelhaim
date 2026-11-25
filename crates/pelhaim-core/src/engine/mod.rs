@@ -28,6 +28,9 @@ pub struct ProjectCfg {
     pub slug: String,
     pub name: String,
     pub order: i32,
+    /// The repository root, expanded and canonical where it exists; a session
+    /// whose repository root equals it lands on this line (§7.7).
+    pub path: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -45,6 +48,9 @@ pub struct EngineConfig {
     pub local_offset: chrono::FixedOffset,
     /// Stations kept per track; older ones fold into "+N earlier". At least 1.
     pub max_stations: usize,
+    /// §7.7 (2026-11-24): untagged sessions go to their cwd's repository, and
+    /// lines are created for repositories and tags not in config.
+    pub auto_projects: bool,
 }
 
 impl Default for EngineConfig {
@@ -62,6 +68,7 @@ impl Default for EngineConfig {
             decision_log_write: true,
             local_offset: chrono::FixedOffset::east_opt(0).expect("zero offset"),
             max_stations: 5,
+            auto_projects: true,
         }
     }
 }
@@ -253,6 +260,8 @@ pub struct Engine {
     /// Oldest first, at most `TIMINGS_KEPT`.
     timings: Vec<StationTiming>,
     timed: HashSet<String>,
+    /// Names of lines for slugs not in config, slug to display name; kept for the run.
+    auto_lines: BTreeMap<String, String>,
 }
 
 const TIMINGS_KEPT: usize = 1000;
@@ -291,6 +300,7 @@ impl Engine {
             early_finishes: BTreeMap::new(),
             timings,
             timed,
+            auto_lines: BTreeMap::new(),
         }
     }
 
@@ -383,18 +393,38 @@ impl Engine {
         }
     }
 
-    fn projects_in_order(&self) -> Vec<&ProjectCfg> {
+    /// `(slug, name)`: configured lines by `order`, then auto-created ones by
+    /// slug. An auto line shows only while a track is on it, so a session that
+    /// sat there until its tag arrived leaves no empty line behind.
+    fn projects_in_order(&self) -> Vec<(String, String)> {
         let mut projects: Vec<&ProjectCfg> = self.cfg.projects.iter().collect();
         projects.sort_by_key(|p| p.order);
+        let occupied: BTreeSet<&str> = self
+            .tracks
+            .values()
+            .filter_map(|t| match &t.line {
+                LineKey::Project(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect();
         projects
+            .into_iter()
+            .map(|p| (p.slug.clone(), p.name.clone()))
+            .chain(
+                self.auto_lines
+                    .iter()
+                    .filter(|(s, _)| occupied.contains(s.as_str()))
+                    .map(|(s, n)| (s.clone(), n.clone())),
+            )
+            .collect()
     }
 
     fn line_views(&self) -> Vec<LineView> {
         let projects = self.projects_in_order();
         let mut lines = vec![self.line_view(LineKey::Dispatch, "DISPATCH".into())];
         let mut project_lines: Vec<LineView> = projects
-            .iter()
-            .map(|p| self.line_view(LineKey::Project(p.slug.clone()), p.name.clone()))
+            .into_iter()
+            .map(|(slug, name)| self.line_view(LineKey::Project(slug), name))
             .collect();
         if self.cfg.float_alert_lines {
             project_lines.sort_by_key(|l| !l.has_open_alert);

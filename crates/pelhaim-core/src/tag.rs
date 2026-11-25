@@ -17,6 +17,21 @@ pub fn is_valid_slug(s: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
+/// A repository directory name as a slug (§7.7): ASCII lowercased, every run
+/// of other characters one `-`, trimmed. `None` when nothing is left.
+pub fn slugify(name: &str) -> Option<String> {
+    let mut out = String::new();
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let out = out.trim_end_matches('-');
+    (!out.is_empty()).then(|| out.to_string())
+}
+
 /// Spec §7.7: only line 1 counts. Only spaces and tabs are stripped in front
 /// (F12), so a text starting with a newline is untagged rather than letting a
 /// tag on a later line through.
@@ -158,6 +173,18 @@ mod tests {
         assert!(!is_valid_slug("eth_ica"));
         assert!(!is_valid_slug("ethica "));
         assert!(!is_valid_slug("éthica"));
+    }
+
+    #[test]
+    fn slugify_repo_names() {
+        assert_eq!(slugify("SafeAscent").as_deref(), Some("safeascent"));
+        assert_eq!(slugify("loosy_goose").as_deref(), Some("loosy-goose"));
+        assert_eq!(slugify("g.l.a.s.s").as_deref(), Some("g-l-a-s-s"));
+        assert_eq!(slugify("  MLB  fansent!").as_deref(), Some("mlb-fansent"));
+        assert_eq!(slugify("éthica").as_deref(), Some("thica"));
+        assert_eq!(slugify("---"), None);
+        assert_eq!(slugify(""), None);
+        assert!(slugify("Pelhaim M1").is_some_and(|s| is_valid_slug(&s)));
     }
 
     #[test]

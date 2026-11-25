@@ -1,6 +1,7 @@
 mod claude;
 mod codex;
 mod discover;
+mod repo;
 mod version;
 
 use std::collections::{BTreeMap, HashSet};
@@ -22,6 +23,7 @@ use crate::{
 pub use claude::{ClaudeFileParser, parse_meta};
 pub use codex::CodexFileParser;
 pub use discover::{ClaudeFile, discover_claude, discover_codex};
+pub use repo::{RepoResolver, find_repo};
 pub use version::{CLAUDE_TESTED, CODEX_TESTED, is_untested};
 
 const TAIL_MAX: usize = 120;
@@ -322,6 +324,7 @@ struct Observer<S: SessionSource> {
     tx: mpsc::Sender<Event>,
     // Ordered by path, so a main transcript drains before its own `<sid>/subagents/` files.
     files: BTreeMap<PathBuf, Tracked<S>>,
+    repos: RepoResolver,
 }
 
 impl<S: SessionSource> Observer<S> {
@@ -334,6 +337,7 @@ impl<S: SessionSource> Observer<S> {
             opts,
             tx,
             files: BTreeMap::new(),
+            repos: RepoResolver::new(),
         };
         let caught_up = match obs.sweep().await {
             Ok(()) => obs.emit(vec![Event::CatchUpDone { tool: S::TOOL }]).await,
@@ -429,7 +433,7 @@ impl<S: SessionSource> Observer<S> {
             let Some(t) = self.files.get_mut(path) else {
                 return Ok(());
             };
-            let events = match t.tailer.read_new() {
+            let mut events = match t.tailer.read_new() {
                 Ok(TailRead::Lines(lines)) if lines.is_empty() => break,
                 Ok(TailRead::Lines(lines)) => t.feed(&lines),
                 Ok(TailRead::Reset) => t.reset(),
@@ -437,6 +441,7 @@ impl<S: SessionSource> Observer<S> {
                 // Unreadable for now (permissions, a racing rename); the next poll retries.
                 Err(_) => break,
             };
+            self.repos.fill(&mut events);
             self.emit(events).await?;
         }
         let events = self

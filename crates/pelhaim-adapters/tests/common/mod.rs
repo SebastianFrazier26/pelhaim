@@ -158,3 +158,27 @@ pub fn append(path: &Path, line: &str) {
     f.write_all(line.as_bytes()).unwrap();
     f.write_all(b"\n").unwrap();
 }
+
+/// Synthetic `.git` layouts under `root`, no git needed: `Plain` (a `.git`
+/// dir), `SafeAscent` with a linked worktree at `SafeAscent-r7v2`, `Outer`
+/// with a nested repo at `Outer/vendor/Inner`, and `loose` with no repo.
+pub fn repo_tree(root: &Path) {
+    let mk = |p: &str| fs::create_dir_all(root.join(p)).unwrap();
+    let put = |p: &str, text: &str| fs::write(root.join(p), text).unwrap();
+    mk("Plain/.git");
+    put("Plain/.git/HEAD", "ref: refs/heads/main\n");
+    mk("Plain/src/deep");
+    mk("SafeAscent/.git/worktrees/r7v2");
+    put("SafeAscent/.git/worktrees/r7v2/commondir", "../..\n");
+    mk("SafeAscent-r7v2/crates");
+    let gitdir = root.join("SafeAscent/.git/worktrees/r7v2");
+    put(
+        "SafeAscent-r7v2/.git",
+        &format!("gitdir: {}\n", gitdir.display()),
+    );
+    mk("Outer/.git");
+    mk("Outer/vendor/Inner/.git");
+    mk("Outer/vendor/Inner/lib");
+    mk("Outer/docs");
+    mk("loose/dir");
+}

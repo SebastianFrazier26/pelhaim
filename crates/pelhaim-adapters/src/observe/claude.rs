@@ -272,6 +272,7 @@ impl ClaudeFileParser {
             parent: self.parent.clone(),
             path: self.path.clone(),
             cwd: self.cwd.clone(),
+            repo: None,
             version: self.version.clone(),
             started,
         });
