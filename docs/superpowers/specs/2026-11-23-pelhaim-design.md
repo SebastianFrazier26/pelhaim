@@ -877,9 +877,9 @@ All flags in this section were verified 2026-11-23 against `--help` unless marke
 
 - **Spawn:**
   ```
-  codex exec --json -C <train worktree> -s workspace-write --approve-for-me [-m <model>] [--output-schema …] "pelhaim-project: <slug>\n…"
+  codex exec --json -C <train worktree> --approve-for-me [-m <model>] [--output-schema …] "pelhaim-project: <slug>\n…"
   ```
-  All of these flags were verified. `-C` points at the train's worktree, not the project root (§7.8).
+  All of these flags were verified. (M2 spike, 2026-11-24: `-s workspace-write` together with `--approve-for-me` is a usage error. `--approve-for-me` alone uses the workspace-write sandbox; see §10.1.) `-C` points at the train's worktree, not the project root (§7.8).
 - **Local models through Codex:** `--oss` and `--local-provider lmstudio|ollama` are verified. Launch mode can therefore also drive local models through Codex, independently of Direct mode.
 - **Process life:** `codex exec` is one-shot; the process exits after the task.
   - A follow-up or answer is a new process: `codex exec resume <SESSION_ID> "<answer>"` (verified: `resume [SESSION_ID] [PROMPT]`). The train stays the same; only the process changes.
@@ -1453,9 +1453,8 @@ All of §10 is **[Agent's call]**, from the owner's norms. The owner should look
 
 - **Claude Code** (`claude -p`):
   - `--permission-mode auto`. Verified as a choice; the full list is `acceptEdits`, `auto`, `bypassPermissions`, `manual`, `dontAsk`, `plan`.
-    - The exact semantics of `auto` aren't documented in `--help`. The design assumes it is the classifier-backed auto mode the owner already uses interactively, which allows routine work and escalates risky actions. The M2 spike must confirm this.
-    - If it isn't, fall back to `acceptEdits` plus `--allowedTools` for in-worktree commands.
-  - `--permission-prompts host` (verified; the default) sends whatever the CLI does escalate to pelhaim, which raises it as an alert.
+    - *Superseded by the M2 spike (2026-11-24):* `auto` is the classifier-backed auto mode. It does **not** escalate network GETs, writes outside the worktree, or `git remote add` when they are requested. The owner keeps it anyway, as an accepted risk (see the owner decisions above). No `acceptEdits` fallback.
+  - *Superseded by the M2 spike:* `--permission-prompts none` is used in auto mode. A class set to `ask` uses `--permission-mode manual --permission-prompt-tool stdio`, because `--permission-prompts host` alone auto-denies.
   - `--disallowedTools` (verified; pattern syntax like `"Bash(git *)"`) hard-blocks the fixed stop points the CLI shouldn't attempt at all, e.g. `"Bash(git push *)"` and `"Bash(gh pr merge *)"`. pelhaim performs push and PR itself after the owner approves.
   - The cwd is the train's worktree, and no `--add-dir` is passed by default, so the CLI's own file scope is the worktree.
   - `bypassPermissions` and `--dangerously-skip-permissions` are never used unless the owner sets them per project (§10).
@@ -1611,8 +1610,8 @@ Each has a default so work isn't blocked.
 17. **Native app stack** (owner decision). Default: SwiftUI + Notification Service Extension, iOS 17+ (for CryptoKit HPKE), in a separate `pelhaim-ios` repo.
 18. **Can the phone approve high-risk alerts** (push/PR, security sign-off)? Default: no, view-only from the phone (`allow_high_risk = false`). Face ID to open the app defaults on.
 19. **Notification option buttons:** dynamic notification categories vs answering in-app. Default: a text-reply action plus "Open" on the notification, and the option buttons in the app. Revisit once the M5 prototype runs.
-20. **Claude `--permission-mode auto` semantics in `-p`** (§10.1). Confirm in the M2 spike. Fallback: `acceptEdits` plus `--allowedTools`.
-21. **Codex `exec` network and approval behaviour under `-s workspace-write --approve-for-me`**, and the `-c` keys for approval policy. Confirm in the M2 spike, and don't guess the keys.
+20. **Claude `--permission-mode auto` semantics in `-p`** (§10.1). *Resolved by the M2 spike (2026-11-24):* classifier-backed; network GETs and outside-worktree writes are not escalated; the owner accepted this.
+21. **Codex `exec` network and approval behaviour** (§10.1). *Resolved by the M2 spike:* `--approve-for-me` alone (it cannot be combined with `-s`); network off by default; `-c sandbox_workspace_write.network_access=true`; resume needs `-c approval_policy` and `-c approvals_reviewer` (the latter undocumented, owner-accepted).
 
 ## 15. Risks
 
@@ -1667,7 +1666,7 @@ These are listed in order of how much they shape the build.
 18. `step_complete` as an MCP tool, with final-line JSON as the fallback (§7.9). Approved 2026-11-23.
 19. Routing-rule enforcement: a required `signoff` field per step, a keyword backstop, and a per-project "park and continue" flag, default off (§8.5). Approved 2026-11-23.
 20. Auto-mode risk classes and defaults, the classifier lists, and loosening some classes drawing a red badge (§10.1). Awaiting owner review.
-21. The CLI mapping: Claude `--permission-mode auto` plus `--disallowedTools` for push and merge; Codex `-s workspace-write --approve-for-me`. Both pending spike confirmation (§10.1). Awaiting owner review.
+21. The CLI mapping: Claude `--permission-mode auto` plus `--disallowedTools` for push and merge; Codex `--approve-for-me`. Both confirmed or amended by the M2 spike, 2026-11-24 (§10.1). Awaiting owner review.
 22. Keep-awake: `caffeinate -i -m -s -w <pid>` as a child process, not IOKit; no `-d`/`-u` by default; observed trains count; a 60 s release delay; waiting trains hold only when remote is on (§8.6). Awaiting owner review.
 23. Remote design: outbound-only relay, HPKE Auth mode, QR pairing with code confirmation, replay rules, high-risk alerts view-only from the phone, M5 placement (§8.7, §13). Awaiting owner review.
 24. Milestone marker details: own line, any line, not in fences, 32-char names, the `~h m s` estimate grammar up to 7 days, duplicates a no-op (§7.10). Awaiting owner review.
