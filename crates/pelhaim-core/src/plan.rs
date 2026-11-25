@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::event::Tool;
 use crate::ids::PlanId;
-use crate::milestone::{MILESTONE_NAME_MAX, estimate_secs_from_hours};
+use crate::milestone::{
+    MILESTONE_NAME_MAX, Milestone, estimate_secs_from_hours, format_milestone, parse_milestones,
+};
 use crate::text::sanitize_line;
 
 const STEP_ID_MAX: usize = 40;
@@ -156,8 +158,16 @@ fn valid_step_id(id: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
+/// A title ending in ` ~<duration>` would be read back as a shorter name plus an estimate.
 fn valid_title(t: &str) -> bool {
-    !t.is_empty() && sanitize_line(t) == t && t.chars().count() <= MILESTONE_NAME_MAX
+    !t.is_empty()
+        && sanitize_line(t) == t
+        && t.chars().count() <= MILESTONE_NAME_MAX
+        && parse_milestones(&format_milestone(t, None))
+            == [Milestone {
+                name: t.to_string(),
+                estimate_secs: None,
+            }]
 }
 
 fn valid_estimate(h: Option<f64>) -> bool {

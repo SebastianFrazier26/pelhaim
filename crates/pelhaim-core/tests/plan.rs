@@ -139,7 +139,14 @@ fn invalid_step_id_and_bad_title() {
         );
     }
     assert_eq!(validate(&plan(vec![with_id(&"a".repeat(40))])), Ok(()));
-    for title in ["t".repeat(33), "a\tb".into(), String::new(), " lead".into()] {
+    for title in [
+        "t".repeat(33),
+        "a\tb".into(),
+        String::new(),
+        " lead".into(),
+        "Do it ~2h".into(),
+        "~2h".into(),
+    ] {
         assert_eq!(
             errors(&plan(vec![titled(&title)])),
             vec![PlanError::BadTitle { step: "s".into() }],
