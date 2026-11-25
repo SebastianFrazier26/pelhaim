@@ -39,6 +39,7 @@ numeric_id!(
     StationId(u32),
     ForkId(u32),
     DecisionId(i64),
+    PlanId(u32),
 );
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Debug)]

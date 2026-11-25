@@ -4,6 +4,7 @@ pub mod ids;
 pub mod milestone;
 pub mod model;
 pub mod number;
+pub mod plan;
 pub mod snapshot;
 pub mod tag;
 #[cfg(any(test, feature = "testkit"))]
@@ -15,9 +16,10 @@ pub use engine::{
     KeepAwakeAction, LogError, OwnerEvent, ProjectCfg, RestoredState,
 };
 pub use event::{Event, QOption, Question, RepoRef, Tool, Ts};
-pub use ids::{AlertId, DecisionId, ForkId, SessionKey, StationId, TrackId, TrainId};
+pub use ids::{AlertId, DecisionId, ForkId, PlanId, SessionKey, StationId, TrackId, TrainId};
 pub use milestone::{
-    ESTIMATE_MAX_SECS, MILESTONE_NAME_MAX, Milestone, parse_estimate, parse_milestones,
+    ESTIMATE_MAX_SECS, MILESTONE_NAME_MAX, Milestone, estimate_secs_from_hours, format_milestone,
+    parse_estimate, parse_milestones,
 };
 pub use model::{
     Alert, AlertKind, AlertState, AnsweredBy, AssignOption, AssignTarget, Counters, Decision, Fork,
@@ -25,6 +27,7 @@ pub use model::{
     StationTiming, TagResolution, Track, Train, TrainState, Who,
 };
 pub use number::{format_train_number, train_number};
+pub use plan::{Check, FlagReason, Plan, PlanError, PlanLayout, PlanStatus, PlanStep, SignoffFlag};
 pub use snapshot::{LineView, Snapshot};
 pub use tag::{
     DISPATCH_SLUG, TagParse, closest_slug, is_valid_slug, levenshtein, parse_tag, slugify,

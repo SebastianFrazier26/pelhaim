@@ -83,6 +83,33 @@ fn milestone(rest: &str) -> Option<Milestone> {
     })
 }
 
+/// The inverse of `parse_milestones` for one marker line; zero units are omitted.
+pub fn format_milestone(name: &str, estimate_secs: Option<u32>) -> String {
+    let mut out = format!("{MARKER_PREFIX}{name}");
+    if let Some(secs) = estimate_secs.filter(|&s| s > 0) {
+        out.push_str(" ~");
+        for (n, unit) in [(secs / 3600, 'h'), (secs / 60 % 60, 'm'), (secs % 60, 's')] {
+            if n > 0 {
+                out.push_str(&format!("{n}{unit}"));
+            }
+        }
+    }
+    out
+}
+
+/// Whole minutes, at least one, at most `ESTIMATE_MAX_SECS`.
+pub fn estimate_secs_from_hours(h: f64) -> u32 {
+    let max_minutes = f64::from(ESTIMATE_MAX_SECS / 60);
+    let minutes = (h * 60.0).round();
+    let minutes = if minutes.is_nan() {
+        1.0
+    } else {
+        minutes.clamp(1.0, max_minutes)
+    };
+    // Clamped to [1, 10080] above, so the cast cannot truncate.
+    minutes as u32 * 60
+}
+
 /// `1h30m`, `20m`, `45s`, `2h5m10s`: units in h, m, s order, each at most
 /// once, total above zero and at most `ESTIMATE_MAX_SECS`.
 pub fn parse_estimate(s: &str) -> Option<u32> {
@@ -226,6 +253,38 @@ mod tests {
         let got = &parse_milestones(&long)[0].name;
         assert_eq!(got.chars().count(), MILESTONE_NAME_MAX);
         assert!(got.ends_with('…'));
+    }
+
+    #[test]
+    fn format_milestone_round_trips() {
+        for (n, e) in [
+            ("Migrate", Some(7200)),
+            ("Wire it", Some(5400)),
+            ("x", None),
+            ("lint", Some(7510)),
+            ("tick", Some(45)),
+        ] {
+            assert_eq!(parse_milestones(&format_milestone(n, e)), vec![m(n, e)]);
+        }
+        assert_eq!(
+            format_milestone("Migrate the schema", Some(7200)),
+            "pelhaim-milestone: Migrate the schema ~2h"
+        );
+        assert_eq!(format_milestone("x", None), "pelhaim-milestone: x");
+        assert_eq!(
+            format_milestone("x", Some(5400)),
+            "pelhaim-milestone: x ~1h30m"
+        );
+    }
+
+    #[test]
+    fn estimate_from_hours_rounds_to_minutes() {
+        assert_eq!(estimate_secs_from_hours(2.0), 7200);
+        assert_eq!(estimate_secs_from_hours(0.001), 60);
+        assert_eq!(estimate_secs_from_hours(1.505), 5400);
+        assert_eq!(estimate_secs_from_hours(1e9), ESTIMATE_MAX_SECS);
+        assert_eq!(estimate_secs_from_hours(f64::NAN), 60);
+        assert_eq!(estimate_secs_from_hours(-3.0), 60);
     }
 
     #[test]
