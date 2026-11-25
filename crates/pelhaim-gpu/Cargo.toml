@@ -19,10 +19,10 @@ anyhow = "1.0.105"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 pelhaim-board = { path = "../pelhaim-board" }
 pelhaim-core = { path = "../pelhaim-core" }
+png = "0.18.1"
 pollster = "1.0.3"
 wgpu = "30.0.2"
 winit = "0.30.13"
 
 [dev-dependencies]
 pelhaim-core = { path = "../pelhaim-core", features = ["testkit"] }
-png = "0.18.1"

@@ -22,6 +22,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
   ```
 
 - Licences and advisories: `cargo deny check`
+- App icon: `tools/icon/build.sh` (PNGs, iconset and `.icns` under `assets/icon/`); macOS app: `scripts/bundle-macos.sh [--install]` → `target/pelhaim.app`
 
 ## Layout
 

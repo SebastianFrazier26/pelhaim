@@ -373,6 +373,7 @@ impl App {
     fn open(&mut self, el: &ActiveEventLoop) -> anyhow::Result<()> {
         let attrs = Window::default_attributes()
             .with_title(self.opts.title.clone())
+            .with_window_icon(crate::icon::window_icon())
             .with_inner_size(LogicalSize::new(1280.0, 800.0))
             .with_visible(false);
         let window = Arc::new(el.create_window(attrs).context("creating the window")?);
