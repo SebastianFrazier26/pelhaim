@@ -1459,7 +1459,7 @@ All of §10 is **[Agent's call]**, from the owner's norms. The owner should look
   - The cwd is the train's worktree, and no `--add-dir` is passed by default, so the CLI's own file scope is the worktree.
   - `bypassPermissions` and `--dangerously-skip-permissions` are never used unless the owner sets them per project (§10).
 - **Codex** (`codex exec`):
-  - `-s workspace-write` (verified) gives Codex's own sandbox, scoped to the workspace = the worktree.
+  - *Superseded by the M2 spike (2026-11-24):* `-s workspace-write` is not passed. `--approve-for-me` cannot be combined with `-s`, and on its own it already gives the workspace-write sandbox, scoped to the worktree.
   - `--approve-for-me` (verified: "Route approval requests through automatic review using the workspace-write sandbox") is the closest match to auto mode.
   - `-a, --ask-for-approval <on-request|never>` is verified only on top-level `codex`. It is **not listed in `codex exec --help`**, so don't pass it to `exec`. A `-c` config-key equivalent is unverified.
   - How the sandbox treats network access by default is unverified. Check it in the M2 spike, and add `-c` overrides only after confirming the key names.
