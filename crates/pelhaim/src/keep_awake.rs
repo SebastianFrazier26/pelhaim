@@ -203,34 +203,46 @@ mod tests {
         use std::path::{Path, PathBuf};
         use std::time::{Duration, Instant};
 
+        /// Linux refuses to exec a file that any process holds open for writing (ETXTBSY), and a
+        /// sibling test thread that forks while `fs::write` has the script open carries that
+        /// descriptor into its child until the child's exec. So the script is written under
+        /// another name and copied into place by `cp`, whose write descriptor no fork of ours
+        /// can inherit.
+        fn write_script(p: &Path, body: &str) {
+            let src = p.with_extension("src");
+            std::fs::write(&src, body).unwrap();
+            let ok = std::process::Command::new("cp")
+                .arg(&src)
+                .arg(p)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "cp {} {}", src.display(), p.display());
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
         /// F42: one argv element per line. The rename makes argv.txt appear complete,
         /// and `exec` keeps `$$` equal to the pid the holder owns.
         pub fn install(dir: &Path, name: &str) {
-            let p = dir.join(name);
-            std::fs::write(
-                &p,
+            write_script(
+                &dir.join(name),
                 "#!/bin/sh\nd=\"$(dirname \"$0\")\"\necho run >> \"$d/runs.txt\"\n\
                  echo $$ > \"$d/pid.tmp\" && mv \"$d/pid.tmp\" \"$d/pid.txt\"\n\
                  printf '%s\\n' \"$@\" > \"$d/argv.tmp\" && mv \"$d/argv.tmp\" \"$d/argv.txt\"\n\
                  exec sleep 600\n",
-            )
-            .unwrap();
-            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            );
         }
 
         /// Like systemd-inhibit: skips its `--` options and runs the rest as a child, so
         /// the real `sh -c` pid-poll loop runs as a grandchild in the holder's group.
         pub fn install_inhibit(dir: &Path) {
-            let p = dir.join("systemd-inhibit");
-            std::fs::write(
-                &p,
+            write_script(
+                &dir.join("systemd-inhibit"),
                 "#!/bin/sh\nd=\"$(dirname \"$0\")\"\n\
                  echo $$ > \"$d/pid.tmp\" && mv \"$d/pid.tmp\" \"$d/pid.txt\"\n\
                  while [ \"${1#--}\" != \"$1\" ]; do shift; done\n\
                  \"$@\" &\nwait $!\n",
-            )
-            .unwrap();
-            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            );
         }
 
         pub fn group(pgid: &str) -> Vec<String> {

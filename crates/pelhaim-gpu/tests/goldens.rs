@@ -1,6 +1,7 @@
 #![cfg(feature = "gpu-goldens")]
 
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use pelhaim_board::{
     CardRow, DisplayList, InsetState, Mark, PaletteKind, PopupState, Prim, R, SceneInput,
@@ -16,6 +17,14 @@ const H: u32 = 900;
 const CHANNEL_TOL: u8 = 2;
 /// At most this fraction of pixels may differ.
 const MAX_DIFF_FRACTION: f64 = 0.001;
+
+// Lavapipe (CI's software Vulkan) segfaults intermittently when test threads create and drop
+// wgpu instances and devices at the same time, so every test holds this for its GPU work.
+static GPU: Mutex<()> = Mutex::new(());
+
+fn gpu() -> MutexGuard<'static, ()> {
+    GPU.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 fn render_scene(snap: &Snapshot, view: &ViewState, now_s: f64) -> Vec<u8> {
     let scene = build_scene(&SceneInput {
@@ -93,6 +102,7 @@ fn check_golden(name: &str, actual: &[u8]) {
 
 #[test]
 fn adapter_is_reported() {
+    let _gpu = gpu();
     let info = adapter_info().expect("an adapter");
     assert!(info.ends_with(')') && info.contains(" ("), "{info}");
     eprintln!("adapter: {info}");
@@ -100,6 +110,7 @@ fn adapter_is_reported() {
 
 #[test]
 fn work_colour_is_exact() {
+    let _gpu = gpu();
     let p = palette(PaletteKind::Matte);
     let dl = DisplayList {
         prims: vec![Prim::Rect {
@@ -123,12 +134,14 @@ fn work_colour_is_exact() {
 
 #[test]
 fn board_golden() {
+    let _gpu = gpu();
     let px = render_scene(&sample_board(), &ViewState::default(), 0.0);
     check_golden("board", &px);
 }
 
 #[test]
 fn alert_golden() {
+    let _gpu = gpu();
     let view = ViewState {
         popup: Some(PopupState::new(AlertId("q:claude:S1:toolu_q".into()))),
         ..ViewState::default()
@@ -139,6 +152,7 @@ fn alert_golden() {
 
 #[test]
 fn inset_golden() {
+    let _gpu = gpu();
     let mut snap = sample_board();
     let train = TrainId(7);
     let t = snap.trains.get_mut(&train).expect("train 7");
@@ -158,6 +172,7 @@ fn inset_golden() {
 
 #[test]
 fn console_golden() {
+    let _gpu = gpu();
     let mut view = ViewState {
         radio_log: vec![
             CardRow {

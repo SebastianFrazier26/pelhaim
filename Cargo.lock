@@ -2182,6 +2182,7 @@ dependencies = [
  "chrono",
  "insta",
  "pelhaim-core",
+ "png",
  "serde",
  "serde_json",
  "unicode-segmentation",

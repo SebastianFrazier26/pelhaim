@@ -1,0 +1,21 @@
+; pelhaim app icon, hand-tuned 16x16 pixel grid (one char per pixel).
+; Legend: . clear  T tile (vertical indigo gradient)  G ground line
+;         H steel highlight  S steel  D steel shadow  B bumper  K underframe
+;         P sign panel  q LED glow on the panel  R lit LED  r dim lit LED (ring at 16 px)
+;         W windshield  w windshield reflection  L headlight
+................
+...TTTTTTTTTT...
+..TTHPrrrrPDTT..
+.TTHPrPPPPrPDTT.
+.TTHrPPPRPPrDTT.
+.TTHrPPRRPPrDTT.
+.TTHrPPPRPPrDTT.
+.TTHrPPPRPPrDTT.
+.TTHPrPPPPrPDTT.
+.TTHPPrrrrPPDTT.
+.TTHSSSSSSSSDTT.
+.TTHWWwwWWWWDTT.
+.TTHWwwWWWWWDTT.
+..TSLSSSSSSLST..
+...BBBBBBBBBB...
+................

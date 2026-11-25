@@ -1,5 +1,6 @@
 pub mod a11y_bridge;
 mod app;
+mod icon;
 pub mod keymap;
 mod offscreen;
 mod renderer;

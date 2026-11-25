@@ -120,6 +120,19 @@ Data lives in `~/.local/share/pelhaim/` (override `PELHAIM_DATA_DIR`): `pelhaim.
 
 Run the tests with `cargo test --workspace`.
 
+### macOS app
+
+```sh
+scripts/bundle-macos.sh             # builds target/pelhaim.app (release binary, icon, ad-hoc signature)
+scripts/bundle-macos.sh --install   # also copies it to ~/Applications
+```
+
+The app opens `pelhaim observe`. It is signed ad hoc, not notarised, so it is for the machine that built it.
+
+### App icon
+
+The icon is the front of a metro car with pelhaim's own LED route sign on its forehead: a red dot-matrix "1" with a long diagonal flag (drawn for the icon; the board font's short-hooked "1" read as an "L" at icon size) inside a ring of LEDs. It is drawn from code by `crates/pelhaim-board/examples/icon.rs`; 16 and 32 px come from the hand-tuned grids `assets/icon/grid-{16,32}.txt`. `tools/icon/build.sh` regenerates `assets/icon/png/`, `assets/icon/pelhaim.iconset/` and (with macOS `iconutil`) `assets/icon/pelhaim.icns`. On Linux and Windows the window uses the 256 px PNG; macOS uses the bundle's icon.
+
 ## Keyboard and mouse
 
 | Input | Action |
