@@ -139,6 +139,7 @@ Run the tests with `cargo test --workspace`.
 
 - **Read-only observe.** pelhaim only opens session files under `~/.claude` and `~/.codex` for reading. It never writes, renames, creates or deletes anything there, and never types into or signals a session. You answer questions in the session's own terminal.
 - **Privacy.** No transcript text is copied to disk or logged: the database holds your assignments, dismissals and decisions, and the log holds ids, counts and states. There is no telemetry and no network code.
+- **Launch mode and Claude auto mode (accepted risk).** Launched Claude trains run with `--permission-mode auto`. Auto mode does **not** ask before network reads (e.g. `curl`), writes outside the train's worktree, or `git remote add`, so the `network` and `outside_worktree` "ask" defaults are not enforced for Claude. The owner chose this knowingly (2026-11-24). `git push` and `gh pr merge` stay hard-denied to the agent, and pelhaim pushes and opens PRs only after you approve. `pelhaim doctor` repeats this note.
 - **Decision log.** `DECISION-LOG.md` is written only when you click `[Log decision]`, by inserting one entry (atomic rename, previous version kept as `DECISION-LOG.md.pelhaim-bak`).
 
 ## Keep-awake

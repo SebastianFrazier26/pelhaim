@@ -4,7 +4,12 @@
 
 **Versions:** `claude` 2.1.332 (Claude Code), `codex-cli` 0.158.0, `gh` 2.89.0. Claude probes used `--model haiku`, except plan mode, which ran on Sonnet (see S8). Codex probes used the configured default model with `-c model_reasoning_effort="low"`.
 
-**Status: owner review needed.** S2, S4, S12 and S13 changed a default. The plan was edited in this commit; every edit is marked "Spike amendment"/"Spike finding", and the ones that need a decision are marked PENDING OWNER REVIEW. Plan rule (CLI flags): stop before Task 12. Tasks 4 and 13 also consume these findings.
+**Status: decided by the owner (2026-11-24).**
+- S2 and S13: the amended defaults are taken.
+- S4: auto mode stays as it is; the risk is accepted and recorded in spec §10.1 and R17.
+- S12: the undocumented `-c` keys are used, with a doctor check.
+- Scrubbed probe recordings are allowed as fixtures.
+- Still open, and not decided: the in-band interrupt (S9, Task 12 note) and `--strict-mcp-config` (S5).
 
 ## Verdicts
 

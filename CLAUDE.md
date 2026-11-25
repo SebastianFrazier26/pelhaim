@@ -37,7 +37,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 ## Fixtures and tests
 
-- Fixtures are synthetic and hand-written, never copied from real session files: `crates/pelhaim-adapters/tests/fixtures/{claude,codex}` and `crates/pelhaim/tests/fixtures/config`.
+- Fixtures are synthetic, or scrubbed recordings of throwaway probe sessions (e.g. `crates/pelhaim-adapters/tests/fixtures/launch`, see `docs/spikes/2026-11-24-m2-cli-protocols.md`) — never real work sessions: `crates/pelhaim-adapters/tests/fixtures/{claude,codex}` and `crates/pelhaim/tests/fixtures/config`.
 - Tests never touch the real `~/.claude`, `~/.codex`, `~/.config/pelhaim` or `~/Developer/DECISION-LOG.md`: they copy fixtures into a tempdir and inject paths through an `Env` or a child's env (`HOME`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PELHAIM_DATA_DIR`, `PELHAIM_CONFIG`, `PATH`).
 
 ## Rules
